@@ -1,0 +1,217 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ================================================
+   GLOBAL BASE RESETS
+   ================================================ */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  transition:
+    background-color 0.3s,
+    border-color 0.3s,
+    color 0.3s,
+    box-shadow 0.3s;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ================================================
+   SCROLLBAR — Global (webkit + firefox)
+   ================================================ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.7);
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.4) transparent;
+}
+
+[data-theme="dark"] * {
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+
+/* ================================================
+   GRADIENT TEXT UTILITIES
+   (Used in sidebar logo — can't be done in Tailwind
+   because -webkit-text-fill-color is not supported)
+   ================================================ */
+.gradient-text-light {
+  background: linear-gradient(90deg, #d946ef 0%, #a855f7 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.gradient-text-dark {
+  background: linear-gradient(90deg, #e50914 0%, #b20710 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ================================================
+   ANIMATIONS
+   ================================================ */
+
+/* Loader pulse (Dashboard inner-loader) */
+@keyframes pulse-opacity {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.loader-pulse {
+  animation: pulse-opacity 1.5s ease-in-out infinite;
+}
+
+/* Fade in down (Alert boxes in Profile, etc.) */
+@keyframes fadeInDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.fade-in {
+  animation: fadeInDown 0.4s ease-out forwards;
+}
+
+/* Slide up (Modals / dropdowns) */
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.slide-up {
+  animation: slideUp 0.2s ease-out forwards;
+}
+
+/* ================================================
+   PASSWORD TOOLTIP
+   (Signup page — position:absolute popup)
+   ================================================ */
+.password-tooltip {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  color: #1e293b;
+  padding: 15px;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  width: 240px;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-10px);
+  transition: all 0.3s ease;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+.password-tooltip.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.password-tooltip::after {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 30px;
+  border-width: 8px;
+  border-style: solid;
+  border-color: transparent transparent rgba(255, 255, 255, 0.95) transparent;
+}
+
+[data-theme="dark"] .password-tooltip {
+  background: rgba(30, 30, 30, 0.95);
+  color: #ffffff;
+  border: 1px solid #444444;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.8);
+}
+
+[data-theme="dark"] .password-tooltip::after {
+  border-color: transparent transparent rgba(30, 30, 30, 0.95) transparent;
+}
+
+/* ================================================
+   PERMISSION TABLE STICKY HEADER
+   (Permissions.css — sticky requires solid bg,
+   rgba/transparent breaks position:sticky in Chrome)
+   ================================================ */
+.perm-table thead tr th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #f1f3ff;
+  border-bottom: 2px solid rgba(99, 102, 241, 0.15);
+}
+
+[data-theme="dark"] .perm-table thead tr th {
+  background: #1a1a2e;
+  border-bottom: 2px solid #2d2d4a;
+}
+
+/* ================================================
+   RECHARTS LEGEND TEXT COLOR (dark mode)
+   Recharts injects inline styles — override here
+   ================================================ */
+[data-theme="dark"] .recharts-legend-item-text {
+  color: #b3b3b3 !important;
+}
+
+[data-theme="dark"] .recharts-cartesian-axis-tick-value {
+  fill: #64748b !important;
+}

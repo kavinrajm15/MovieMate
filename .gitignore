@@ -1,0 +1,89 @@
+# ========================================
+# Root .gitignore — FastAPI + React/Vite
+# ========================================
+
+# ========================
+# Python / FastAPI Backend
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.installed.cfg
+
+# Virtual environments
+.venv
+venv/
+env/
+ENV/
+.python-version
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploaded media (keep folders, ignore contents)
+backend/static/posters/*
+backend/static/profile_pics/*
+!backend/static/posters/.gitkeep
+!backend/static/profile_pics/.gitkeep
+
+# ========================
+# React / Vite Frontend
+# ========================
+node_modules/
+dist/
+dist-ssr/
+build/
+.vite/
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# ========================
+# Environment & Secrets
+# ========================
+.env
+.env.*
+!.env.example
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+
+# ========================
+# Logs
+# ========================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.pid
+
+# ========================
+# Testing & Coverage
+# ========================
+.pytest_cache/
+.coverage
+htmlcov/
+coverage/
+.tox/
+.nyc_output/
+
+# ========================
+# OS & Editor
+# ========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
