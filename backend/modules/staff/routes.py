@@ -1,7 +1,6 @@
 from flask import Blueprint, jsonify, request, session
-from core.database import get_db
+from core.database import get_db, get_next_id
 from core.security import check_perm
-import sqlite3
 import re
 import json
 
@@ -11,36 +10,40 @@ staff_bp = Blueprint('staff', __name__)
 def manage_staff():
     if not check_perm("staff", "view"):
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
+    db = get_db()
     current_id = session.get("staff_id")
     role = session.get("role")
+    
     if role == "superadmin":
-        staff_members = conn.execute(
-            "SELECT s.*, m.name as manager_name FROM staff s LEFT JOIN staff m ON s.manager_id = m.staff_id"
-        ).fetchall()
+        staff_members = list(db.staff.find())
     else:
-        staff_members = conn.execute(
-            """SELECT s.*, m.name as manager_name
-               FROM staff s LEFT JOIN staff m ON s.manager_id = m.staff_id
-               WHERE s.staff_id = ? OR s.manager_id = ?""",
-            (current_id, current_id)
-        ).fetchall()
-    managers = conn.execute("SELECT staff_id, name FROM staff WHERE role='manager' ORDER BY name").fetchall()
-    conn.close()
-    staff_list = [dict(s) for s in staff_members]
-    staff_list.sort(key=lambda item: (item["role"], [int(t) if t.isdigit() else t.lower() for t in re.split('([0-9]+)', item["name"])]))
-    return jsonify({"status": "success", "staff": staff_list, "managers": [dict(m) for m in managers]})
+        staff_members = list(db.staff.find({"$or": [{"_id": current_id}, {"manager_id": current_id}]}))
+        
+    for s in staff_members:
+        s["staff_id"] = s["_id"]
+        if s.get("manager_id"):
+            mgr = db.staff.find_one({"_id": s.get("manager_id")})
+            s["manager_name"] = mgr.get("name") if mgr else ""
+        else:
+            s["manager_name"] = ""
+            
+    managers = list(db.staff.find({"role": "manager"}, {"_id": 1, "name": 1}))
+    for m in managers: m["staff_id"] = m["_id"]
+    
+    staff_members.sort(key=lambda item: (item.get("role", ""), [int(t) if t.isdigit() else t.lower() for t in re.split('([0-9]+)', item.get("name", ""))]))
+    return jsonify({"status": "success", "staff": staff_members, "managers": managers})
 
 
 @staff_bp.route("/admin/staff/add", methods=["POST"])
 def add_staff():
     if not check_perm("staff", "add"):
         return jsonify({"error": "Unauthorized"}), 403
-    username = request.form.get("username").strip()
+    username = (request.form.get("username") or "").strip()
     password = request.form.get("password")
     role     = request.form.get("role")
-    name     = request.form.get("name").strip()
+    name     = (request.form.get("name") or "").strip()
     manager_id = request.form.get("manager_id") or None
+    if manager_id: manager_id = int(manager_id)
 
     current_role = session.get("role")
     if current_role != "superadmin":
@@ -48,30 +51,27 @@ def add_staff():
         if role in ["manager", "superadmin"]:
             role = "supervisor"
 
-    conn = get_db()
-    try:
-        cur = conn.execute(
-            "INSERT INTO staff (username, password, role, name, manager_id) VALUES (?, ?, ?, ?, ?)",
-            (username, password, role, name, manager_id)
-        )
-        new_staff_id = cur.lastrowid
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.close()
+    db = get_db()
+    if db.staff.find_one({"username": username}):
         return jsonify({"error": "Username taken"}), 400
 
+    new_staff_id = get_next_id(db, "staff")
+    db.staff.insert_one({
+        "_id": new_staff_id, "staff_id": new_staff_id, "username": username, 
+        "password": password, "role": role, "name": name, "manager_id": manager_id
+    })
+
     try:
-        rp = conn.execute("SELECT permissions FROM role_permissions WHERE role_name=?", (role,)).fetchone()
+        rp = db.role_permissions.find_one({"role_name": role})
         if rp:
-            perms_json = rp["permissions"]
+            perms_json = rp.get("permissions")
         else:
             modules = ["cities","theatres","movies","staff","partners","profile_requests","partner_requests","movie_requests","permissions"]
             perms_json = json.dumps({m: {"view":False,"add":False,"edit":False,"delete":False,"assign":False} for m in modules})
-        conn.execute("INSERT OR REPLACE INTO staff_permissions (staff_id, permissions) VALUES (?, ?)", (new_staff_id, perms_json))
-        conn.commit()
+        db.staff_permissions.update_one({"_id": new_staff_id}, {"$set": {"staff_id": new_staff_id, "permissions": perms_json}}, upsert=True)
     except Exception:
         pass
-    conn.close()
+    
     return jsonify({"status": "success", "message": "Staff added."})
 
 
@@ -82,22 +82,22 @@ def staff_by_role(role_name):
         return jsonify({"error": "Unauthorized"}), 403
     current_role = session.get("role")
     current_id   = session.get("staff_id")
-    conn = get_db()
+    db = get_db()
+    
     if current_role == "superadmin":
-        staff = conn.execute(
-            "SELECT staff_id, name, role FROM staff WHERE role = ? ORDER BY name", (role_name,)
-        ).fetchall()
+        staff = list(db.staff.find({"role": role_name}).sort("name", 1))
     else:
-        staff = list(conn.execute(
-            "SELECT staff_id, name, role FROM staff WHERE role = ? AND manager_id = ? ORDER BY name",
-            (role_name, current_id)
-        ).fetchall())
+        staff = list(db.staff.find({"role": role_name, "manager_id": current_id}).sort("name", 1))
         if current_role == role_name:
-            me = conn.execute("SELECT staff_id, name, role FROM staff WHERE staff_id = ?", (current_id,)).fetchone()
-            if me and not any(s["staff_id"] == me["staff_id"] for s in staff):
+            me = db.staff.find_one({"_id": current_id})
+            if me and not any(s["_id"] == me["_id"] for s in staff):
                 staff.append(me)
-    conn.close()
-    return jsonify({"status": "success", "staff": [dict(s) for s in staff]})
+                
+    for s in staff:
+        s["staff_id"] = s["_id"]
+        if "_id" in s: del s["_id"] # Optional, just making output cleaner
+        
+    return jsonify({"status": "success", "staff": staff})
 
 
 @staff_bp.route("/admin/staff/assign/<int:staff_id>", methods=["POST"])
@@ -108,10 +108,9 @@ def assign_manager(staff_id):
     manager_id = int(manager_id_val) if manager_id_val and manager_id_val.strip() != "" else None
     if session.get("role") != "superadmin" and manager_id is not None:
         manager_id = session.get("staff_id")
-    conn = get_db()
-    conn.execute("UPDATE staff SET manager_id=? WHERE staff_id=?", (manager_id, staff_id))
-    conn.commit()
-    conn.close()
+        
+    db = get_db()
+    db.staff.update_one({"_id": staff_id}, {"$set": {"manager_id": manager_id}})
     return jsonify({"status": "success", "message": "Assignment updated."})
 
 
@@ -121,14 +120,13 @@ def delete_staff(staff_id):
         return jsonify({"error": "Unauthorized"}), 403
     if staff_id == session.get("staff_id"):
         return jsonify({"error": "Cannot delete your own account."}), 400
-    conn = get_db()
+        
+    db = get_db()
     if session.get("role") != "superadmin":
-        target = conn.execute("SELECT manager_id FROM staff WHERE staff_id=?", (staff_id,)).fetchone()
-        if not target or target["manager_id"] != session.get("staff_id"):
-            conn.close()
+        target = db.staff.find_one({"_id": staff_id})
+        if not target or target.get("manager_id") != session.get("staff_id"):
             return jsonify({"error": "Unauthorized"}), 403
-    conn.execute("DELETE FROM staff WHERE staff_id=?", (staff_id,))
-    conn.execute("UPDATE staff SET manager_id=NULL WHERE manager_id=?", (staff_id,))
-    conn.commit()
-    conn.close()
+            
+    db.staff.delete_one({"_id": staff_id})
+    db.staff.update_many({"manager_id": staff_id}, {"$set": {"manager_id": None}})
     return jsonify({"status": "success", "message": "Staff deleted."})

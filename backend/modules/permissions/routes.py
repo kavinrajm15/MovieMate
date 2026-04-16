@@ -25,7 +25,6 @@ BUILTIN_ROLES = ["superadmin", "manager", "supervisor"]
 def default_permissions():
     p = {m["key"]: {a: False for a in ALL_ACTIONS} for m in ALL_MODULES}
     p["staff"]["assign"] = False
-    # dashboard granular actions
     for stat in ["total_movies", "total_theatres", "top_cities", "top_showtimes",
                  "total_income", "ticket_sales_count", "ticket_sales_graph", "transactions"]:
         p["dashboard"][stat] = False
@@ -40,14 +39,11 @@ def _has_perm_access():
     if session.get("role") == "superadmin":
         return True
     current_id = session.get("staff_id")
-    conn = get_db()
-    row = conn.execute(
-        "SELECT permissions FROM staff_permissions WHERE staff_id=?", (current_id,)
-    ).fetchone()
-    conn.close()
+    db = get_db()
+    row = db.staff_permissions.find_one({"_id": current_id})
     if row:
         try:
-            p = json.loads(row["permissions"])
+            p = json.loads(row["permissions"]) if isinstance(row["permissions"], str) else row["permissions"]
             return bool(p.get("permissions", {}).get("view", False))
         except Exception:
             pass
@@ -60,38 +56,27 @@ def _has_perm_access():
 def get_permissions(staff_id):
     if not session.get("admin") or not _has_perm_access():
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
+    db = get_db()
 
-    # Get the staff member's role
-    staff_row = conn.execute(
-        "SELECT role FROM staff WHERE staff_id=?", (staff_id,)
-    ).fetchone()
+    staff_row = db.staff.find_one({"_id": staff_id})
+    perm_row  = db.staff_permissions.find_one({"_id": staff_id})
 
-    # Get stored permissions
-    perm_row = conn.execute(
-        "SELECT permissions FROM staff_permissions WHERE staff_id=?", (staff_id,)
-    ).fetchone()
-
-    # Get the role's default permissions for comparison
     role_default = None
     if staff_row:
-        rp = conn.execute(
-            "SELECT permissions FROM role_permissions WHERE role_name=?", (staff_row["role"],)
-        ).fetchone()
+        rp = db.role_permissions.find_one({"role_name": staff_row.get("role")})
         if rp:
             try:
-                role_default = json.loads(rp["permissions"])
+                raw = rp["permissions"]
+                role_default = json.loads(raw) if isinstance(raw, str) else raw
             except Exception:
                 role_default = default_permissions()
 
-    conn.close()
-
     try:
-        perms = json.loads(perm_row["permissions"]) if perm_row else default_permissions()
+        raw = perm_row["permissions"] if perm_row else None
+        perms = (json.loads(raw) if isinstance(raw, str) else raw) if raw else default_permissions()
     except Exception:
         perms = default_permissions()
 
-    # Compare stored perms vs role defaults to determine has_custom
     has_custom = False
     if role_default is not None and perm_row is not None:
         has_custom = (json.dumps(perms, sort_keys=True) != json.dumps(role_default, sort_keys=True))
@@ -104,23 +89,14 @@ def save_permissions(staff_id):
     if not session.get("admin") or not _has_perm_access():
         return jsonify({"error": "Unauthorized"}), 403
     data = request.get_json()
-    perms_json = json.dumps(data.get("permissions", default_permissions()))
-    conn = get_db()
-    existing = conn.execute(
-        "SELECT staff_id FROM staff_permissions WHERE staff_id=?", (staff_id,)
-    ).fetchone()
-    if existing:
-        conn.execute(
-            "UPDATE staff_permissions SET permissions=? WHERE staff_id=?",
-            (perms_json, staff_id)
-        )
-    else:
-        conn.execute(
-            "INSERT INTO staff_permissions (staff_id, permissions) VALUES (?, ?)",
-            (staff_id, perms_json)
-        )
-    conn.commit()
-    conn.close()
+    perms = data.get("permissions", default_permissions())
+    perms_json = json.dumps(perms)
+    db = get_db()
+    db.staff_permissions.update_one(
+        {"_id": staff_id},
+        {"$set": {"staff_id": staff_id, "permissions": perms_json}},
+        upsert=True
+    )
     return jsonify({"status": "success", "message": "Permissions saved."})
 
 
@@ -137,13 +113,11 @@ def my_permissions():
             full["dashboard"][stat] = True
         return jsonify({"status": "success", "permissions": full, "is_superadmin": True})
     staff_id = session.get("staff_id")
-    conn = get_db()
-    row = conn.execute(
-        "SELECT permissions FROM staff_permissions WHERE staff_id=?", (staff_id,)
-    ).fetchone()
-    conn.close()
+    db = get_db()
+    row = db.staff_permissions.find_one({"_id": staff_id})
     try:
-        perms = json.loads(row["permissions"]) if row else default_permissions()
+        raw = row["permissions"] if row else None
+        perms = (json.loads(raw) if isinstance(raw, str) else raw) if raw else default_permissions()
     except Exception:
         perms = default_permissions()
     return jsonify({"status": "success", "permissions": perms, "is_superadmin": False})
@@ -157,29 +131,20 @@ def permissions_staff_list():
         return jsonify({"error": "Unauthorized"}), 403
     current_id = session.get("staff_id")
     role = session.get("role")
-    conn = get_db()
+    db = get_db()
     if role == "superadmin":
-        # Superadmin sees everyone except superadmins, and not themselves
-        staff = conn.execute(
-            "SELECT staff_id, name, role, username FROM staff WHERE role != 'superadmin' ORDER BY name"
-        ).fetchall()
+        staff = list(db.staff.find({"role": {"$ne": "superadmin"}}).sort("name", 1))
     elif role == "manager":
-        # Manager sees only supervisors assigned under them
-        staff = conn.execute(
-            """SELECT staff_id, name, role, username FROM staff
-               WHERE manager_id = ? AND role != 'superadmin' AND role != 'manager'
-               ORDER BY name""",
-            (current_id,)
-        ).fetchall()
+        staff = list(db.staff.find({
+            "manager_id": current_id,
+            "role": {"$nin": ["superadmin", "manager"]}
+        }).sort("name", 1))
     else:
-        # Other roles: only see users directly assigned under them
-        staff = conn.execute(
-            "SELECT staff_id, name, role, username FROM staff WHERE manager_id = ? ORDER BY name",
-            (current_id,)
-        ).fetchall()
-    conn.close()
-    # Exclude the current user themselves
-    result = [dict(s) for s in staff if s["staff_id"] != current_id]
+        staff = list(db.staff.find({"manager_id": current_id}).sort("name", 1))
+
+    for s in staff:
+        s["staff_id"] = s["_id"]
+    result = [s for s in staff if s["_id"] != current_id]
     return jsonify({"status": "success", "staff": result})
 
 
@@ -189,32 +154,17 @@ def permissions_staff_list():
 def reset_to_role_defaults(staff_id):
     if not session.get("admin") or not _has_perm_access():
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
-    staff = conn.execute(
-        "SELECT role FROM staff WHERE staff_id=?", (staff_id,)
-    ).fetchone()
+    db = get_db()
+    staff = db.staff.find_one({"_id": staff_id})
     if not staff:
-        conn.close()
         return jsonify({"error": "Staff not found"}), 404
-    rp = conn.execute(
-        "SELECT permissions FROM role_permissions WHERE role_name=?", (staff["role"],)
-    ).fetchone()
+    rp = db.role_permissions.find_one({"role_name": staff.get("role")})
     perms_json = rp["permissions"] if rp else json.dumps(default_permissions())
-    existing = conn.execute(
-        "SELECT staff_id FROM staff_permissions WHERE staff_id=?", (staff_id,)
-    ).fetchone()
-    if existing:
-        conn.execute(
-            "UPDATE staff_permissions SET permissions=? WHERE staff_id=?",
-            (perms_json, staff_id)
-        )
-    else:
-        conn.execute(
-            "INSERT INTO staff_permissions (staff_id, permissions) VALUES (?, ?)",
-            (staff_id, perms_json)
-        )
-    conn.commit()
-    conn.close()
+    db.staff_permissions.update_one(
+        {"_id": staff_id},
+        {"$set": {"staff_id": staff_id, "permissions": perms_json}},
+        upsert=True
+    )
     return jsonify({"status": "success", "message": "Reset to role defaults."})
 
 
@@ -224,26 +174,16 @@ def reset_to_role_defaults(staff_id):
 def sync_role_defaults():
     if not session.get("admin") or session.get("role") != "superadmin":
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
-    staff_without = conn.execute("""
-        SELECT s.staff_id, s.role
-        FROM staff s
-        LEFT JOIN staff_permissions sp ON s.staff_id = sp.staff_id
-        WHERE sp.staff_id IS NULL
-    """).fetchall()
+    db = get_db()
+    all_staff = list(db.staff.find())
+    existing_ids = set(db.staff_permissions.distinct("_id"))
     count = 0
-    for row in staff_without:
-        rp = conn.execute(
-            "SELECT permissions FROM role_permissions WHERE role_name=?", (row["role"],)
-        ).fetchone()
-        perms_json = rp["permissions"] if rp else json.dumps(default_permissions())
-        conn.execute(
-            "INSERT OR IGNORE INTO staff_permissions (staff_id, permissions) VALUES (?, ?)",
-            (row["staff_id"], perms_json)
-        )
-        count += 1
-    conn.commit()
-    conn.close()
+    for s in all_staff:
+        if s["_id"] not in existing_ids:
+            rp = db.role_permissions.find_one({"role_name": s.get("role")})
+            perms_json = rp["permissions"] if rp else json.dumps(default_permissions())
+            db.staff_permissions.insert_one({"_id": s["_id"], "staff_id": s["_id"], "permissions": perms_json})
+            count += 1
     return jsonify({"status": "success", "synced": count, "message": f"{count} staff synced."})
 
 
@@ -253,31 +193,31 @@ def sync_role_defaults():
 def list_roles():
     if not session.get("admin") or not _has_perm_access():
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
-    roles = conn.execute(
-        "SELECT role_name, permissions, is_builtin, visible_modules FROM role_permissions ORDER BY is_builtin DESC, role_name"
-    ).fetchall()
-    staff_rows = conn.execute(
-        "SELECT role, COUNT(*) as cnt FROM staff GROUP BY role"
-    ).fetchall()
-    conn.close()
-    user_counts = {r["role"]: r["cnt"] for r in staff_rows}
+    db = get_db()
+    roles = list(db.role_permissions.find().sort([("is_builtin", -1), ("role_name", 1)]))
+    
+    # Count staff per role
+    pipeline = [{"$group": {"_id": "$role", "cnt": {"$sum": 1}}}]
+    user_counts = {r["_id"]: r["cnt"] for r in db.staff.aggregate(pipeline)}
+    
     result = []
     for r in roles:
         try:
-            perms = json.loads(r["permissions"])
+            raw = r["permissions"]
+            perms = json.loads(raw) if isinstance(raw, str) else raw
         except Exception:
             perms = default_permissions()
         try:
-            vis = json.loads(r["visible_modules"]) if r["visible_modules"] else default_visible_modules()
+            raw_vis = r.get("visible_modules")
+            vis = (json.loads(raw_vis) if isinstance(raw_vis, str) else raw_vis) if raw_vis else default_visible_modules()
         except Exception:
             vis = default_visible_modules()
         result.append({
-            "role_name":      r["role_name"],
-            "permissions":    perms,
+            "role_name":       r["role_name"],
+            "permissions":     perms,
             "visible_modules": vis,
-            "is_builtin":     bool(r["is_builtin"]),
-            "user_count":     user_counts.get(r["role_name"], 0),
+            "is_builtin":      bool(r.get("is_builtin")),
+            "user_count":      user_counts.get(r["role_name"], 0),
         })
     return jsonify({"status": "success", "roles": result})
 
@@ -292,20 +232,16 @@ def add_role():
         return jsonify({"error": "Role name is required"}), 400
     if role_name in BUILTIN_ROLES:
         return jsonify({"error": "Cannot shadow a built-in role name"}), 400
-    conn = get_db()
-    if conn.execute(
-        "SELECT role_name FROM role_permissions WHERE role_name=?", (role_name,)
-    ).fetchone():
-        conn.close()
+    db = get_db()
+    if db.role_permissions.find_one({"role_name": role_name}):
         return jsonify({"error": "Role already exists"}), 400
-    conn.execute(
-        "INSERT INTO role_permissions (role_name, permissions, is_builtin) VALUES (?, ?, 0)",
-        (role_name, json.dumps(data.get("permissions", default_permissions())))
-    )
-    conn.commit()
-    conn.close()
+    perms = data.get("permissions", default_permissions())
+    db.role_permissions.insert_one({
+        "role_name": role_name,
+        "permissions": json.dumps(perms),
+        "is_builtin": 0
+    })
     return jsonify({"status": "success", "message": f"Role '{role_name}' created."})
-
 
 
 @permissions_bp.route("/admin/roles/<role_name>/visible-modules", methods=["GET"])
@@ -313,16 +249,15 @@ def get_role_visible_modules(role_name):
     """Return which modules are visible for a role's permission editor."""
     if not session.get("admin") or not _has_perm_access():
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
-    row = conn.execute(
-        "SELECT visible_modules FROM role_permissions WHERE role_name=?", (role_name,)
-    ).fetchone()
-    conn.close()
+    db = get_db()
+    row = db.role_permissions.find_one({"role_name": role_name})
     try:
-        vis = json.loads(row["visible_modules"]) if row and row["visible_modules"] else default_visible_modules()
+        raw = row.get("visible_modules") if row else None
+        vis = (json.loads(raw) if isinstance(raw, str) else raw) if raw else default_visible_modules()
     except Exception:
         vis = default_visible_modules()
     return jsonify({"status": "success", "visible_modules": vis})
+
 @permissions_bp.route("/admin/roles/<role_name>", methods=["POST"])
 def update_role_permissions(role_name):
     if not session.get("admin") or not _has_perm_access():
@@ -332,36 +267,21 @@ def update_role_permissions(role_name):
     perms_json = json.dumps(perms)
     vis = data.get("visible_modules", default_visible_modules())
     vis_json = json.dumps(vis)
-    conn = get_db()
+    db = get_db()
 
-    # 1. Update the role default permissions + visible_modules
-    conn.execute(
-        "UPDATE role_permissions SET permissions=?, visible_modules=? WHERE role_name=?",
-        (perms_json, vis_json, role_name)
+    db.role_permissions.update_one(
+        {"role_name": role_name},
+        {"$set": {"permissions": perms_json, "visible_modules": vis_json}}
     )
 
-    # 2. Apply to ALL existing staff with this role
-    staff_with_role = conn.execute(
-        "SELECT staff_id FROM staff WHERE role=?", (role_name,)
-    ).fetchall()
-
+    staff_with_role = list(db.staff.find({"role": role_name}))
     for row in staff_with_role:
-        existing = conn.execute(
-            "SELECT staff_id FROM staff_permissions WHERE staff_id=?", (row["staff_id"],)
-        ).fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE staff_permissions SET permissions=? WHERE staff_id=?",
-                (perms_json, row["staff_id"])
-            )
-        else:
-            conn.execute(
-                "INSERT INTO staff_permissions (staff_id, permissions) VALUES (?, ?)",
-                (row["staff_id"], perms_json)
-            )
+        db.staff_permissions.update_one(
+            {"_id": row["_id"]},
+            {"$set": {"staff_id": row["_id"], "permissions": perms_json}},
+            upsert=True
+        )
 
-    conn.commit()
-    conn.close()
     return jsonify({
         "status": "success",
         "message": f"Role updated and applied to {len(staff_with_role)} staff member(s).",
@@ -375,30 +295,24 @@ def delete_role(role_name):
         return jsonify({"error": "Unauthorized"}), 403
     if role_name in BUILTIN_ROLES:
         return jsonify({"error": "Cannot delete a built-in role"}), 400
-    conn = get_db()
-    count = conn.execute(
-        "SELECT COUNT(*) FROM staff WHERE role=?", (role_name,)
-    ).fetchone()[0]
+    db = get_db()
+    count = db.staff.count_documents({"role": role_name})
     if count > 0:
-        conn.close()
         return jsonify({"error": f"Cannot delete — {count} staff member(s) use this role"}), 400
-    conn.execute("DELETE FROM role_permissions WHERE role_name=?", (role_name,))
-    conn.commit()
-    conn.close()
+    db.role_permissions.delete_one({"role_name": role_name})
     return jsonify({"status": "success", "message": f"Role '{role_name}' deleted."})
-
 
 
 @permissions_bp.route("/admin/roles/list-all", methods=["GET"])
 def list_all_roles_simple():
     if not session.get("admin"):
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
-    roles = conn.execute(
-        "SELECT role_name, is_builtin FROM role_permissions WHERE role_name != 'superadmin' ORDER BY is_builtin DESC, role_name"
-    ).fetchall()
-    conn.close()
+    db = get_db()
+    roles = list(db.role_permissions.find(
+        {"role_name": {"$ne": "superadmin"}},
+        {"role_name": 1, "is_builtin": 1}
+    ).sort([("is_builtin", -1), ("role_name", 1)]))
     return jsonify({
         "status": "success",
-        "roles": [{"role_name": r["role_name"], "is_builtin": bool(r["is_builtin"])} for r in roles]
-    })
+        "roles": [{"role_name": r["role_name"], "is_builtin": bool(r.get("is_builtin"))} for r in roles]
+    })

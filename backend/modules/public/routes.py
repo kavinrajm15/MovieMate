@@ -1,159 +1,204 @@
 from flask import Blueprint, jsonify, request, redirect, url_for, session
-from core.database import get_db
+from core.database import get_db, get_next_id
 from core.security import normalize_date, get_next_dates, TODAY
-import requests
+import requests as req_lib
 from datetime import datetime, timedelta
 from decouple import config
+from typing import Any
 
 public_bp = Blueprint('public', __name__)
+
+def parse_time_to_minutes(time_str):
+    if not time_str: return 0
+    try:
+        parts = time_str.strip().split()
+        time_part = parts[0]
+        meridiem = parts[1].upper() if len(parts) > 1 else ""
+        h, m = map(int, time_part.split(':'))
+        if meridiem == 'PM' and h != 12: h += 12
+        if meridiem == 'AM' and h == 12: h = 0
+        return h * 60 + m
+    except Exception:
+        return 0
 
 @public_bp.route("/")
 def home():
     date = normalize_date(request.args.get("date"))
-    conn = get_db()
-    movies = conn.execute("SELECT DISTINCT m.movie_id, m.title, m.image, m.duration, m.genres, m.certificate FROM movies m JOIN showtimes s ON m.movie_id = s.movie_id WHERE s.date = ? ORDER BY m.title LIMIT 10", (date,)).fetchall()
-    conn.close()
-    return jsonify({"status": "success", "movies": [dict(m) for m in movies]})
+    db = get_db()
+    movie_ids = db.showtimes.distinct("movie_id", {"date": date})
+    movies = list(db.movies.find({"_id": {"$in": movie_ids}}).sort("title", 1).limit(10))
+    return jsonify({"status": "success", "movies": movies})
 
 @public_bp.route("/load_movies")
 def load_movies():
     offset = int(request.args.get("offset", 0))
-    limit = int(request.args.get("limit", 4))
-    date = normalize_date(request.args.get("date"))
-    conn = get_db()
-    movies = conn.execute("SELECT DISTINCT m.title, m.image FROM movies m JOIN showtimes s ON m.movie_id = s.movie_id WHERE s.date = ? ORDER BY m.title LIMIT ? OFFSET ?", (date, limit, offset)).fetchall()
-    conn.close()
-    return jsonify({"movies": [dict(m) for m in movies]})
+    limit  = int(request.args.get("limit", 4))
+    date   = normalize_date(request.args.get("date"))
+    db = get_db()
+    movie_ids = db.showtimes.distinct("movie_id", {"date": date})
+    movies = list(db.movies.find({"_id": {"$in": movie_ids}}, {"title": 1, "image": 1}).sort("title", 1).skip(offset).limit(limit))
+    return jsonify({"movies": movies})
 
 @public_bp.route("/movies")
 def movies():
-    city = request.args.get("city")
-    date = normalize_date(request.args.get("date"))
+    city  = request.args.get("city")
+    date  = normalize_date(request.args.get("date"))
     dates = get_next_dates(3)
     if not city:
         return jsonify({"movies": [], "city": None, "date": date, "dates": dates})
-    conn = get_db()
-    movies = conn.execute("""
-        SELECT DISTINCT m.movie_id, m.title, m.image, m.duration, m.genres, m.certificate
-        FROM movies m JOIN showtimes s ON m.movie_id = s.movie_id
-        JOIN theatres t ON s.theatre_id = t.theatre_id
-        WHERE t.city = ? AND s.date = ? ORDER BY m.title LIMIT 12 
-    """, (city, date)).fetchall()
-    conn.close()
-    return jsonify({"movies": [dict(m) for m in movies], "city": city, "date": date, "dates": dates})
+    db = get_db()
+    t_ids = db.theatres.distinct("_id", {"city": city.lower()})
+    movie_ids = db.showtimes.distinct("movie_id", {"theatre_id": {"$in": t_ids}, "date": date})
+    movies_list = list(db.movies.find({"_id": {"$in": movie_ids}}).sort("title", 1).limit(12))
+    return jsonify({"movies": movies_list, "city": city, "date": date, "dates": dates})
 
 @public_bp.route("/load_movies_by_city")
 def load_movies_by_city():
-    city = request.args.get("city")
+    city   = request.args.get("city")
     offset = int(request.args.get("offset", 0))
-    limit = int(request.args.get("limit", 6))
-    date = normalize_date(request.args.get("date"))
+    limit  = int(request.args.get("limit", 6))
+    date   = normalize_date(request.args.get("date"))
     if not city:
         return jsonify({"movies": []})
-    conn = get_db()
-    movies = conn.execute("SELECT DISTINCT m.movie_id, m.title, m.image, m.duration, m.genres, m.certificate FROM movies m JOIN showtimes s ON m.movie_id = s.movie_id JOIN theatres t ON s.theatre_id = t.theatre_id WHERE t.city = ? AND s.date = ? ORDER BY m.title LIMIT ? OFFSET ?", (city, date, limit, offset)).fetchall()
-    conn.close()
-    return jsonify({"movies": [dict(m) for m in movies]})
+    db = get_db()
+    t_ids = db.theatres.distinct("_id", {"city": city.lower()})
+    movie_ids = db.showtimes.distinct("movie_id", {"theatre_id": {"$in": t_ids}, "date": date})
+    movies_list = list(db.movies.find({"_id": {"$in": movie_ids}}).sort("title", 1).skip(offset).limit(limit))
+    return jsonify({"movies": movies_list})
 
 @public_bp.route("/theatres")
 def theatres():
-    movie_id = request.args.get("movie_id")
-    city = request.args.get("city")
-    date = normalize_date(request.args.get("date"))
-    specific_theatre_id = request.args.get("theatre_id") 
-    conn = get_db()
-    
+    movie_id           = request.args.get("movie_id")
+    city               = request.args.get("city")
+    date               = normalize_date(request.args.get("date"))
+    specific_theatre_id = request.args.get("theatre_id")
+    db = get_db()
+
     if city and not movie_id:
-        theatres_list = conn.execute("SELECT theatre_id, name, city FROM theatres WHERE LOWER(city) = ? ORDER BY name", (city.lower(),)).fetchall()
-        conn.close()
-        return jsonify({"theatres": [dict(t) for t in theatres_list], "city": city})
-        
+        theatres_list = list(db.theatres.find({"city": city.lower()}).sort("name", 1))
+        return jsonify({"theatres": theatres_list, "city": city})
+
     if not movie_id or not city:
-        conn.close()
         return redirect(url_for('public.home'))
 
-    movie = conn.execute("SELECT title, duration, genres, certificate, image FROM movies WHERE movie_id = ?", (movie_id,)).fetchone()
-    
-    if specific_theatre_id:
-        date_rows = conn.execute("SELECT DISTINCT s.date FROM showtimes s JOIN theatres t ON s.theatre_id = t.theatre_id WHERE s.movie_id = ? AND t.theatre_id = ? AND s.date >= ? ORDER BY s.date", (movie_id, specific_theatre_id, TODAY)).fetchall()
-        rows = conn.execute("SELECT s.showtime_id, t.name, s.show_time, s.format FROM showtimes s JOIN theatres t ON s.theatre_id = t.theatre_id WHERE s.movie_id = ? AND t.theatre_id = ? AND s.date = ? ORDER BY t.name, CASE WHEN s.show_time LIKE '%AM' THEN time(substr(s.show_time, 1, length(s.show_time)-3)) ELSE time(substr(s.show_time, 1, length(s.show_time)-3), '+12 hours') END", (movie_id, specific_theatre_id, date)).fetchall()
-    else:
-        date_rows = conn.execute("SELECT DISTINCT s.date FROM showtimes s JOIN theatres t ON s.theatre_id = t.theatre_id WHERE s.movie_id = ? AND t.city = ? AND s.date >= ? ORDER BY s.date", (movie_id, city, TODAY)).fetchall()
-        rows = conn.execute("SELECT s.showtime_id, t.name, s.show_time, s.format FROM showtimes s JOIN theatres t ON s.theatre_id = t.theatre_id WHERE s.movie_id = ? AND t.city = ? AND s.date = ? ORDER BY t.name, CASE WHEN s.show_time LIKE '%AM' THEN time(substr(s.show_time, 1, length(s.show_time)-3)) ELSE time(substr(s.show_time, 1, length(s.show_time)-3), '+12 hours') END", (movie_id, city, date)).fetchall()
+    movie_id = int(movie_id)
+    movie = db.movies.find_one({"_id": movie_id})
 
-    conn.close()
-    dates = [{"raw": r["date"], "day": datetime.strptime(r["date"], "%Y%m%d").strftime("%a"), "date": datetime.strptime(r["date"], "%Y%m%d").strftime("%d"), "month": datetime.strptime(r["date"], "%Y%m%d").strftime("%b")} for r in date_rows]
+    # Build showtime query
+    st_query: dict[str, Any] = {"movie_id": movie_id}
+    if specific_theatre_id:
+        specific_theatre_id = int(specific_theatre_id)
+        st_query["theatre_id"] = specific_theatre_id
+    else:
+        t_ids = db.theatres.distinct("_id", {"city": city.lower()})
+        st_query["theatre_id"] = {"$in": t_ids}
+
+    # Get available dates
+    date_vals = sorted(db.showtimes.distinct("date", {**st_query, "date": {"$gte": TODAY}}))
+    dates = [{"raw": d, "day": datetime.strptime(d, "%Y%m%d").strftime("%a"),
+              "date": datetime.strptime(d, "%Y%m%d").strftime("%d"),
+              "month": datetime.strptime(d, "%Y%m%d").strftime("%b")} for d in date_vals]
+
+    # Get showtimes for selected date
+    st_query["date"] = date
+    rows = list(db.showtimes.find(st_query, {"showtime_id": 1, "theatre_id": 1, "show_time": 1, "format": 1}))
+
+    # Build theatre_name → shows dict
     theatres_dict = {}
-    for r in rows: theatres_dict.setdefault(r["name"], []).append({"showtime_id": r["showtime_id"], "time": r["show_time"], "format": r["format"]})
-    
-    return jsonify({"theatres": theatres_dict, "city": city, "movie_title": movie["title"], "movie": dict(movie), "dates": dates, "selected_date": date, "movie_id": movie_id})
+    for r in rows:
+        t = db.theatres.find_one({"_id": r.get("theatre_id")})
+        t_name = t.get("name") if t else "Unknown"
+        theatres_dict.setdefault(t_name, []).append({
+            # Use showtime_id field if present; fall back to _id for docs migrated from SQLite
+            "showtime_id": r.get("showtime_id") or r.get("_id"),
+            "time": r.get("show_time"), "format": r.get("format")
+        })
+
+    for t_name in theatres_dict:
+        theatres_dict[t_name].sort(key=lambda x: parse_time_to_minutes(x.get("time")))
+
+    return jsonify({
+        "theatres": theatres_dict, "city": city,
+        "movie_title": movie.get("title") if movie else "",
+        "movie": movie, "dates": dates, "selected_date": date, "movie_id": movie_id
+    })
 
 @public_bp.route("/theatre/<int:theatre_id>")
 def theatre_view(theatre_id):
-    date = normalize_date(request.args.get("date"))
+    date  = normalize_date(request.args.get("date"))
     dates = get_next_dates(3)
-    conn = get_db()
-    theatre = conn.execute("SELECT * FROM theatres WHERE theatre_id = ?", (theatre_id,)).fetchone()
+    db = get_db()
+    theatre = db.theatres.find_one({"_id": theatre_id})
     if not theatre:
-        conn.close()
         return redirect(url_for("public.home"))
-        
-    rows = conn.execute("""
-        SELECT m.movie_id, m.title, m.image, m.duration, m.genres, m.certificate, s.showtime_id, s.show_time, s.format
-        FROM showtimes s JOIN movies m ON s.movie_id = m.movie_id
-        WHERE s.theatre_id = ? AND s.date = ?
-        ORDER BY m.title, CASE WHEN s.show_time LIKE '%AM' THEN time(substr(s.show_time, 1, length(s.show_time)-3)) ELSE time(substr(s.show_time, 1, length(s.show_time)-3), '+12 hours') END
-    """, (theatre_id, date)).fetchall()
-    conn.close()
 
+    rows = list(db.showtimes.find({"theatre_id": theatre_id, "date": date}))
     movies_dict = {}
     for r in rows:
-        m_id = r["movie_id"]
-        if m_id not in movies_dict: movies_dict[m_id] = {"movie_id": m_id, "title": r["title"], "image": r["image"], "duration": r["duration"], "genres": r["genres"], "certificate": r["certificate"], "shows": []}
-        movies_dict[m_id]["shows"].append({"showtime_id": r["showtime_id"], "time": r["show_time"], "format": r["format"]})
+        m_id = r.get("movie_id")
+        if m_id not in movies_dict:
+            m = db.movies.find_one({"_id": m_id})
+            if m:
+                movies_dict[m_id] = {
+                    "movie_id": m_id, "title": m.get("title"), "image": m.get("image"),
+                    "duration": m.get("duration"), "genres": m.get("genres"),
+                    "certificate": m.get("certificate"), "shows": []
+                }
+        if m_id in movies_dict:
+            movies_dict[m_id]["shows"].append({
+                # Use showtime_id field if present; fall back to _id for docs migrated from SQLite
+                "showtime_id": r.get("showtime_id") or r.get("_id"),
+                "time": r.get("show_time"), "format": r.get("format")
+            })
 
-    return jsonify({"theatre": dict(theatre), "movies": list(movies_dict.values()), "dates": dates, "selected_date": date})
+    for m_id in movies_dict:
+        movies_dict[m_id]["shows"].sort(key=lambda x: parse_time_to_minutes(x.get("time")))
+
+    return jsonify({"theatre": theatre, "movies": list(movies_dict.values()), "dates": dates, "selected_date": date})
 
 @public_bp.route("/search")
 def search():
-    q = request.args.get("q", "").strip()
+    q            = request.args.get("q", "").strip()
     city_context = request.args.get("city", "").strip()
     if not q:
         return redirect(url_for("public.home"))
-        
-    conn = get_db()
-    city_check = conn.execute("SELECT DISTINCT city FROM theatres WHERE LOWER(city) = ?", (q.lower(),)).fetchone()
+
+    db = get_db()
+    city_check = db.theatres.find_one({"city": q.lower()})
     if city_check:
-        conn.close()
         return redirect(url_for("public.movies", city=q.lower()))
-        
-    movies = conn.execute("SELECT movie_id, title, image, duration, genres FROM movies WHERE LOWER(title) LIKE ?", (f"%{q.lower()}%",)).fetchall()
-    theatres_list = conn.execute("SELECT theatre_id, name, city FROM theatres WHERE LOWER(name) LIKE ? AND LOWER(city) = ?", (f"%{q.lower()}%", city_context.lower())).fetchall() if city_context else conn.execute("SELECT theatre_id, name, city FROM theatres WHERE LOWER(name) LIKE ?", (f"%{q.lower()}%",)).fetchall()
-    conn.close()
-    
-    return jsonify({"query": q, "movies": [dict(m) for m in movies], "theatres": [dict(t) for t in theatres_list]})
+
+    movies_list  = list(db.movies.find({"title": {"$regex": q, "$options": "i"}}))
+    t_query: dict[str, Any] = {"name": {"$regex": q, "$options": "i"}}
+    if city_context:
+        t_query["city"] = city_context.lower()
+    theatres_list = list(db.theatres.find(t_query))
+
+    return jsonify({"query": q, "movies": movies_list, "theatres": theatres_list})
 
 @public_bp.route("/api/global-search")
 def api_global_search():
     q = request.args.get("q", "").strip()
-    if len(q) < 2: return jsonify({"movies": [], "theatres": [], "cities": []})
-    conn = get_db()
-    movies = conn.execute("SELECT movie_id, title FROM movies WHERE LOWER(title) LIKE ? LIMIT 5", (f"%{q.lower()}%",)).fetchall()
-    theatres = conn.execute("SELECT theatre_id, name, city FROM theatres WHERE LOWER(name) LIKE ? LIMIT 5", (f"%{q.lower()}%",)).fetchall()
-    cities = conn.execute("SELECT DISTINCT city FROM theatres WHERE LOWER(city) LIKE ? LIMIT 5", (f"%{q.lower()}%",)).fetchall()
-    conn.close()
-    return jsonify({"movies": [dict(m) for m in movies], "theatres": [dict(t) for t in theatres], "cities": [c["city"] for c in cities]})
+    if len(q) < 2:
+        return jsonify({"movies": [], "theatres": [], "cities": []})
+    db = get_db()
+    movies_list  = list(db.movies.find({"title": {"$regex": q, "$options": "i"}}, {"title": 1}).limit(5))
+    theatres_list = list(db.theatres.find({"name": {"$regex": q, "$options": "i"}}, {"name": 1, "city": 1}).limit(5))
+    for m in movies_list: m["movie_id"] = m["_id"]
+    for t in theatres_list: t["theatre_id"] = t["_id"]
+    cities = sorted(set(db.theatres.distinct("city", {"city": {"$regex": q, "$options": "i"}})))[:5]
+    return jsonify({"movies": movies_list, "theatres": theatres_list, "cities": cities})
 
 @public_bp.route("/api/city-autocomplete")
 def city_autocomplete():
     query = request.args.get("q", "").strip()
     if len(query) < 2:
         return jsonify([])
-    url = "https://api.olamaps.io/places/v1/autocomplete"
-    headers = {"X-API-Key": config("OLA_MAPS_API_KEY")}
-    params = {"input": query, "components": "country:IN"}
+    url     = "https://api.olamaps.io/places/v1/autocomplete"
+    headers: dict[str, str] = {"X-API-Key": str(config("OLA_MAPS_API_KEY"))}
+    params  = {"input": query, "components": "country:IN"}
     try:
-        r = requests.get(url, headers=headers, params=params, timeout=5)
+        r = req_lib.get(url, headers=headers, params=params, timeout=5)
         data = r.json()
         results = []
         for p in data.get("predictions", []):
@@ -173,72 +218,61 @@ def city_autocomplete():
 @public_bp.route("/api/showtime/<int:showtime_id>")
 def get_showtime_details(showtime_id):
     """Get full showtime info including movie and theatre details."""
-    conn = get_db()
-    showtime = conn.execute("""
-        SELECT s.showtime_id, s.movie_id, s.theatre_id, s.show_time, s.format, s.date,
-               m.title, m.image, m.duration, m.genres, m.certificate,
-               t.name as theatre_name, t.city
-        FROM showtimes s
-        JOIN movies m ON s.movie_id = m.movie_id
-        JOIN theatres t ON s.theatre_id = t.theatre_id
-        WHERE s.showtime_id = ?
-    """, (showtime_id,)).fetchone()
-    conn.close()
+    db = get_db()
+    # Try _id first (new docs), then showtime_id field (handles any id mismatches from migration)
+    showtime = db.showtimes.find_one({"_id": showtime_id}) or \
+               db.showtimes.find_one({"showtime_id": showtime_id})
     if not showtime:
         return jsonify({"error": "Showtime not found"}), 404
-    return jsonify({"showtime": dict(showtime)})
+    movie   = db.movies.find_one({"_id": showtime.get("movie_id")})
+    theatre = db.theatres.find_one({"_id": showtime.get("theatre_id")})
+    result  = {**showtime}
+    if movie:
+        result.update({
+            "title": movie.get("title"), "image": movie.get("image"),
+            "duration": movie.get("duration"), "genres": movie.get("genres"),
+            "certificate": movie.get("certificate")
+        })
+    if theatre:
+        result.update({"theatre_name": theatre.get("name"), "city": theatre.get("city")})
+    return jsonify({"showtime": result})
 
 
 @public_bp.route("/api/showtime/<int:showtime_id>/seats")
 def get_showtime_seats(showtime_id):
     """Get seat layout with booked status + pricing for a showtime."""
-    conn = get_db()
-    showtime = conn.execute(
-        "SELECT theatre_id, movie_id FROM showtimes WHERE showtime_id=?",
-        (showtime_id,)
-    ).fetchone()
+    db = get_db()
+    # Try _id first (new docs), then showtime_id field (handles any id mismatches from migration)
+    showtime = db.showtimes.find_one({"_id": showtime_id}) or \
+               db.showtimes.find_one({"showtime_id": showtime_id})
     if not showtime:
-        conn.close()
         return jsonify({"error": "Showtime not found"}), 404
 
-    theatre_id = showtime["theatre_id"]
-    movie_id   = showtime["movie_id"]
+    theatre_id = showtime.get("theatre_id")
+    movie_id   = showtime.get("movie_id")
 
-    seats = conn.execute(
-        "SELECT * FROM theatre_seats WHERE theatre_id=? ORDER BY row_name, col_num",
-        (theatre_id,)
-    ).fetchall()
+    seats   = list(db.theatre_seats.find({"theatre_id": theatre_id}).sort([("row_name", 1), ("col_num", 1)]))
+    pricing = db.movie_pricing.find_one({"theatre_id": theatre_id, "movie_id": movie_id})
 
-    pricing = conn.execute(
-        "SELECT silver_price, gold_price, platinum_price FROM movie_pricing WHERE theatre_id=? AND movie_id=?",
-        (theatre_id, movie_id)
-    ).fetchone()
-
-    # If no seat layout OR no pricing set → not available for sale
     if not seats or not pricing:
-        conn.close()
         return jsonify({"not_for_sale": True}), 200
 
     cutoff = (datetime.now() - timedelta(minutes=3)).isoformat()
-    # Seats already booked or currently locked by someone else
-    booked_rows = conn.execute(
-        "SELECT seat_id FROM bookings WHERE showtime_id=? AND (status='confirmed' OR (status='locked' AND booked_at > ?))",
-        (showtime_id, cutoff)
-    ).fetchall()
-    booked_ids = {r["seat_id"] for r in booked_rows}
-    conn.close()
+    booked_rows = list(db.bookings.find({
+        "showtime_id": showtime_id,
+        "$or": [{"status": "confirmed"}, {"status": "locked", "booked_at": {"$gt": cutoff}}]
+    }, {"seat_id": 1}))
+    booked_ids = {r.get("seat_id") for r in booked_rows}
 
     seats_list = []
     for s in seats:
         seat = dict(s)
-        if seat["seat_id"] in booked_ids:
+        seat["seat_id"] = seat.get("_id")
+        if seat.get("_id") in booked_ids:
             seat["status"] = "booked"
         seats_list.append(seat)
 
-    return jsonify({
-        "seats": seats_list,
-        "pricing": dict(pricing)
-    })
+    return jsonify({"seats": seats_list, "pricing": pricing})
 
 
 @public_bp.route("/api/booking/lock", methods=["POST"])
@@ -254,66 +288,61 @@ def lock_booking():
     if not showtime_id or not seat_ids:
         return jsonify({"error": "Missing showtime or seat selection"}), 400
 
-    conn = get_db()
+    db     = get_db()
     cutoff = (datetime.now() - timedelta(minutes=3)).isoformat()
-    placeholders = ",".join("?" * len(seat_ids))
-    
-    # 1. Clear any EXPIRED locks for these exact seats so they can be re-locked
-    conn.execute(
-        f"DELETE FROM bookings WHERE showtime_id=? AND seat_id IN ({placeholders}) AND status='locked' AND booked_at <= ?",
-        [showtime_id] + list(seat_ids) + [cutoff]
-    )
-    
-    # 2. Check for active conflicts (confirmed, or still actively locked)
-    conflicts = conn.execute(
-        f"SELECT seat_id FROM bookings WHERE showtime_id=? AND seat_id IN ({placeholders}) AND (status='confirmed' OR (status='locked' AND booked_at > ?))",
-        [showtime_id] + list(seat_ids) + [cutoff]
-    ).fetchall()
 
+    # 1. Clear expired locks for these seats
+    db.bookings.delete_many({
+        "showtime_id": showtime_id,
+        "seat_id":     {"$in": seat_ids},
+        "status":      "locked",
+        "booked_at":   {"$lte": cutoff}
+    })
+
+    # 2. Check for active conflicts
+    conflicts = list(db.bookings.find({
+        "showtime_id": showtime_id,
+        "seat_id":     {"$in": seat_ids},
+        "$or": [{"status": "confirmed"}, {"status": "locked", "booked_at": {"$gt": cutoff}}]
+    }))
     if conflicts:
-        conn.close()
         return jsonify({"error": "One or more seats were just taken. Please re-select."}), 409
 
     user_id   = session["user_id"]
     booked_at = datetime.now().isoformat()
 
-    # Lookup current pricing to snapshot at booking time
-    showtime_row = conn.execute(
-        "SELECT theatre_id, movie_id FROM showtimes WHERE showtime_id=?", (showtime_id,)
-    ).fetchone()
-    pricing_row = None
+    showtime_row = db.showtimes.find_one({"_id": showtime_id})
+    pricing_row  = None
     if showtime_row:
-        pricing_row = conn.execute(
-            "SELECT silver_price, gold_price, platinum_price FROM movie_pricing WHERE theatre_id=? AND movie_id=?",
-            (showtime_row["theatre_id"], showtime_row["movie_id"])
-        ).fetchone()
-    default_prices = {"silver_price": 0, "gold_price": 0, "platinum_price": 0}
-    prices = dict(pricing_row) if pricing_row else default_prices
+        pricing_row = db.movie_pricing.find_one({
+            "theatre_id": showtime_row.get("theatre_id"),
+            "movie_id":   showtime_row.get("movie_id")
+        })
+    prices = pricing_row if pricing_row else {"silver_price": 0, "gold_price": 0, "platinum_price": 0}
 
-    # Fetch seat categories for the requested seats
-    seat_placeholders = ",".join("?" * len(seat_ids))
-    seat_rows = conn.execute(
-        f"SELECT seat_id, category FROM theatre_seats WHERE seat_id IN ({seat_placeholders})",
-        list(seat_ids)
-    ).fetchall()
-    seat_category_map = {r["seat_id"]: (r["category"] or "").lower() for r in seat_rows}
+    seat_rows = list(db.theatre_seats.find({"_id": {"$in": seat_ids}}))
+    seat_map = {r["_id"]: r for r in seat_rows}
 
-    # 3. Lock all requested seats with snapshotted price
     for seat_id in seat_ids:
-        cat = seat_category_map.get(seat_id, "silver")
+        seat_doc = seat_map.get(seat_id, {})
+        cat = (seat_doc.get("category") or "silver").lower()
         if cat in ("diamond", "platinum"):
             price = prices.get("platinum_price", 400)
         elif cat == "gold":
             price = prices.get("gold_price", 250)
         else:
             price = prices.get("silver_price", 150)
-        conn.execute(
-            "INSERT INTO bookings (user_id, showtime_id, seat_id, status, booked_at, price_paid) VALUES (?, ?, ?, 'locked', ?, ?)",
-            (user_id, showtime_id, seat_id, booked_at, price)
-        )
 
-    conn.commit()
-    conn.close()
+        b_id = get_next_id(db, "bookings")
+        db.bookings.insert_one({
+            "_id": b_id, "booking_id": b_id, "user_id": user_id,
+            "showtime_id": showtime_id, "seat_id": seat_id,
+            "status": "locked", "booked_at": booked_at, "price_paid": price,
+            "row_name": seat_doc.get("row_name", ""),
+            "col_num":  seat_doc.get("col_num", ""),
+            "category": seat_doc.get("category", "Silver"),
+        })
+
     return jsonify({"message": "Seats locked for 3 minutes!", "locked_at": booked_at}), 200
 
 
@@ -330,24 +359,40 @@ def confirm_booking():
     if not showtime_id or not seat_ids:
         return jsonify({"error": "Missing showtime or seat selection"}), 400
 
-    conn = get_db()
-    placeholders = ",".join("?" * len(seat_ids))
+    db      = get_db()
     user_id = session["user_id"]
-    now_ts = datetime.now().isoformat()
-    
-    # Proceed to update all given seats to confirmed if they were locked by this user
-    cursor = conn.execute(
-        f"UPDATE bookings SET status='confirmed', booked_at=? WHERE user_id=? AND showtime_id=? AND seat_id IN ({placeholders}) AND status='locked'",
-        [now_ts, user_id, showtime_id] + list(seat_ids)
+    now_ts  = datetime.now().isoformat()
+
+    # Build a snapshot of showtime/movie/theatre so My Tickets AND admin
+    # dashboards work even after merge.py removes showtimes older than 7 days.
+    # movie_id and theatre_id are stored so dashboard revenue/sales queries
+    # can filter bookings directly without going through the showtimes collection.
+    snapshot: dict = {}
+    showtime_snap = db.showtimes.find_one({"_id": showtime_id})
+    if showtime_snap:
+        snapshot["show_time"]  = showtime_snap.get("show_time", "")
+        snapshot["format"]     = showtime_snap.get("format", "")
+        snapshot["date"]       = showtime_snap.get("date", "")
+        snapshot["movie_id"]   = showtime_snap.get("movie_id")    # ← kept for dashboard queries
+        snapshot["theatre_id"] = showtime_snap.get("theatre_id")  # ← kept for dashboard queries
+        movie_snap = db.movies.find_one({"_id": showtime_snap.get("movie_id")})
+        if movie_snap:
+            snapshot["title"] = movie_snap.get("title", "")
+            snapshot["image"] = movie_snap.get("image", "")
+        theatre_snap = db.theatres.find_one({"_id": showtime_snap.get("theatre_id")})
+        if theatre_snap:
+            snapshot["theatre_name"] = theatre_snap.get("name", "")
+            snapshot["city"]         = theatre_snap.get("city", "")
+
+    result = db.bookings.update_many(
+        {"user_id": user_id, "showtime_id": showtime_id, "seat_id": {"$in": seat_ids}, "status": "locked"},
+        {"$set": {"status": "confirmed", "booked_at": now_ts, **snapshot}}
     )
-    
-    if cursor.rowcount < len(seat_ids):
-        conn.rollback()
-        conn.close()
+
+    if result.modified_count < len(seat_ids):
+        # Rollback — put locked ones back to locked (since some weren't updated)
         return jsonify({"error": "Payment window timed out or invalid lock. Please try again."}), 400
 
-    conn.commit()
-    conn.close()
     return jsonify({"message": "Booking confirmed!"}), 201
 
 
@@ -357,43 +402,102 @@ def cancel_booking():
     if not session.get("user_id") or session.get("user_role") != "customer":
         return jsonify({"error": "Unauthorized"}), 401
 
-    data = request.json or {}
+    data        = request.json or {}
     showtime_id = data.get("showtime_id")
-    seat_ids = data.get("seat_ids", [])
-    
+    seat_ids    = data.get("seat_ids", [])
+
     if showtime_id and seat_ids:
-        conn = get_db()
-        placeholders = ",".join("?" * len(seat_ids))
-        conn.execute(
-            f"DELETE FROM bookings WHERE user_id=? AND showtime_id=? AND seat_id IN ({placeholders}) AND status='locked'",
-            [session["user_id"], showtime_id] + list(seat_ids)
-        )
-        conn.commit()
-        conn.close()
-        
+        db = get_db()
+        db.bookings.delete_many({
+            "user_id":     session["user_id"],
+            "showtime_id": showtime_id,
+            "seat_id":     {"$in": seat_ids},
+            "status":      "locked"
+        })
+
     return jsonify({"message": "Booking cancelled"}), 200
 
 
 @public_bp.route("/api/my-bookings")
 def my_bookings():
-    """Get all bookings for the currently logged-in customer."""
+    """Get all confirmed bookings for the currently logged-in customer.
+
+    Uses snapshot data stored on the booking document at confirm-time so that
+    tickets remain visible even after merge.py removes expired showtimes.
+    Falls back to live collection lookups when the snapshot fields are absent
+    (handles bookings made before this fix was deployed).
+    """
     if not session.get("user_id") or session.get("user_role") != "customer":
         return jsonify({"error": "Unauthorized"}), 401
 
-    conn = get_db()
-    rows = conn.execute("""
-        SELECT b.booking_id, b.booked_at, b.status, b.price_paid,
-               ts.row_name, ts.col_num, ts.category,
-               s.showtime_id, s.show_time, s.format, s.date,
-               m.title, m.image,
-               t.name as theatre_name, t.city
-        FROM bookings b
-        JOIN theatre_seats ts ON b.seat_id = ts.seat_id
-        JOIN showtimes s ON b.showtime_id = s.showtime_id
-        JOIN movies m ON s.movie_id = m.movie_id
-        JOIN theatres t ON s.theatre_id = t.theatre_id
-        WHERE b.user_id = ?
-        ORDER BY b.booked_at DESC
-    """, (session["user_id"],)).fetchall()
-    conn.close()
-    return jsonify({"bookings": [dict(r) for r in rows]})
+    db   = get_db()
+    rows = list(db.bookings.find(
+        {"user_id": session["user_id"], "status": "confirmed"}
+    ).sort("booked_at", -1))
+
+    result = []
+    for b in rows:
+        # ── Showtime / movie / theatre ────────────────────────────────────────
+        # Prefer snapshot fields written at confirm time; fall back to live
+        # collection lookups for older bookings that pre-date this fix.
+        show_time    = b.get("show_time", "")
+        fmt          = b.get("format", "")
+        date         = b.get("date", "")
+        title        = b.get("title", "")
+        image        = b.get("image", "")
+        theatre_name = b.get("theatre_name", "")
+        city         = b.get("city", "")
+
+        # If any key fields are missing, try live lookups (backward compat)
+        if not show_time or not title or not theatre_name:
+            showtime = db.showtimes.find_one({"_id": b.get("showtime_id")})
+            if showtime:
+                show_time = show_time or showtime.get("show_time", "")
+                fmt       = fmt       or showtime.get("format", "")
+                date      = date      or showtime.get("date", "")
+                if not title or not image:
+                    movie = db.movies.find_one({"_id": showtime.get("movie_id")})
+                    if movie:
+                        title = title or movie.get("title", "")
+                        image = image or movie.get("image", "")
+                if not theatre_name or not city:
+                    theatre = db.theatres.find_one({"_id": showtime.get("theatre_id")})
+                    if theatre:
+                        theatre_name = theatre_name or theatre.get("name", "")
+                        city         = city         or theatre.get("city", "")
+
+        # Skip only if we truly have nothing useful to show
+        if not title and not show_time:
+            continue
+
+        # ── Seat labels ───────────────────────────────────────────────────────
+        # Prefer snapshot written at lock time; fall back to live seat lookup.
+        row_name = b.get("row_name", "")
+        col_num  = b.get("col_num", "")
+        category = b.get("category", "Silver")
+        if not row_name:
+            seat = db.theatre_seats.find_one({"_id": b.get("seat_id")})
+            if seat:
+                row_name = seat.get("row_name", "")
+                col_num  = seat.get("col_num", "")
+                category = seat.get("category", "Silver")
+
+        result.append({
+            "booking_id":   b.get("_id"),
+            "booked_at":    b.get("booked_at", ""),
+            "status":       b.get("status", "confirmed"),
+            "price_paid":   b.get("price_paid", 0),
+            "row_name":     row_name,
+            "col_num":      col_num,
+            "category":     category,
+            "showtime_id":  b.get("showtime_id"),
+            "show_time":    show_time,
+            "format":       fmt,
+            "date":         date,
+            "title":        title,
+            "image":        image,
+            "theatre_name": theatre_name,
+            "city":         city,
+        })
+
+    return jsonify({"bookings": result})

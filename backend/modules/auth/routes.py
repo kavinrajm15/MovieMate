@@ -1,10 +1,9 @@
 from flask import Blueprint, jsonify, request, redirect, url_for, session, current_app
-from core.database import get_db
+from core.database import get_db, get_next_id
 from services.upload_service import allowed_file
 from werkzeug.utils import secure_filename
 from datetime import datetime
 import os
-import sqlite3
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -17,20 +16,25 @@ def admin_signup():
         theatre_name = request.form["theatre_name"].strip()
         city = request.form["city"].lower().strip()
         
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT theatre_id FROM theatres WHERE name=? AND city=?", (theatre_name, city))
-        theatre = cur.fetchone()
-        t_id = theatre["theatre_id"] if theatre else cur.execute("INSERT INTO theatres (name, city) VALUES (?, ?)", (theatre_name, city)).lastrowid
+        db = get_db()
+        theatre = db.theatres.find_one({"name": theatre_name, "city": city})
+        
+        if theatre:
+            t_id = theatre["_id"]
+        else:
+            t_id = get_next_id(db, "theatres")
+            db.theatres.insert_one({"_id": t_id, "theatre_id": t_id, "name": theatre_name, "city": city})
             
-        try:
-            now = datetime.now().strftime("%Y-%m-%d %I:%M %p")
-            cur.execute("INSERT INTO admins (name, phone, password, theatre_id, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)", (name, phone, password, t_id, now))
-            conn.commit()
-        except sqlite3.IntegrityError:
-            conn.close()
+        if db.admins.find_one({"phone": phone}):
             return jsonify({"status": "error", "message": "Phone number already registered."}), 400
-        conn.close()
+            
+        now = datetime.now().strftime("%Y-%m-%d %I:%M %p")
+        a_id = get_next_id(db, "admins")
+        db.admins.insert_one({
+            "_id": a_id, "admin_id": a_id, "name": name, "phone": phone, 
+            "password": password, "theatre_id": t_id, "status": "pending", 
+            "created_at": now
+        })
         return jsonify({"status": "success", "message": "Signup successful!"}), 201
         
     return jsonify({"status": "success"})
@@ -40,23 +44,21 @@ def admin_login():
     if request.method == "POST":
         username = request.form["username"] 
         password = request.form["password"]
-        conn = get_db()
+        db = get_db()
         
-        staff = conn.execute("SELECT * FROM staff WHERE username=? AND password=?", (username, password)).fetchone()
+        staff = db.staff.find_one({"username": username, "password": password})
         if staff:
-            session.update({"admin": True, "role": staff["role"], "admin_name": staff["name"], "staff_id": staff["staff_id"], "profile_pic": staff["profile_pic"]})
-            conn.close()
-            return jsonify({"status": "success", "role": staff["role"], "user": {"name": staff["name"], "role": staff["role"], "staff_id": staff["staff_id"], "profile_pic": staff["profile_pic"], "theatre_id": None}}), 200
+            session.update({"admin": True, "role": staff["role"], "admin_name": staff["name"], "staff_id": staff["_id"], "profile_pic": staff.get("profile_pic")})
+            return jsonify({"status": "success", "role": staff["role"], "user": {"name": staff["name"], "role": staff["role"], "staff_id": staff["_id"], "profile_pic": staff.get("profile_pic"), "theatre_id": None}}), 200
             
-        admin = conn.execute("SELECT * FROM admins WHERE phone=? AND password=?", (username, password)).fetchone()
-        conn.close()
+        admin = db.admins.find_one({"phone": username, "password": password})
         
         if admin:
             if admin["status"] == "pending":
                 return jsonify({"status": "error", "message": "Your account is currently pending approval by the administrators."}), 403
             
-            session.update({"admin": True, "role": "theatre_admin", "theatre_id": admin["theatre_id"], "admin_name": admin["name"], "admin_id": admin["admin_id"], "profile_pic": admin["profile_pic"]})
-            return jsonify({"status": "success", "role": "theatre_admin", "theatre_id": admin["theatre_id"], "user": {"name": admin["name"], "role": "theatre_admin", "admin_id": admin["admin_id"], "theatre_id": admin["theatre_id"], "profile_pic": admin["profile_pic"]}}), 200
+            session.update({"admin": True, "role": "theatre_admin", "theatre_id": admin["theatre_id"], "admin_name": admin["name"], "admin_id": admin["_id"], "profile_pic": admin.get("profile_pic")})
+            return jsonify({"status": "success", "role": "theatre_admin", "theatre_id": admin["theatre_id"], "user": {"name": admin["name"], "role": "theatre_admin", "admin_id": admin["_id"], "theatre_id": admin["theatre_id"], "profile_pic": admin.get("profile_pic")}}), 200
             
         return jsonify({"status": "error", "message": "Incorrect username or password. Please try again."}), 401
             
@@ -72,7 +74,7 @@ def admin_logout():
 def admin_profile():
     if not session.get("admin"):
         return jsonify({"error": "Unauthorized"}), 401
-    conn = get_db()
+    db = get_db()
     role, error, success = session.get("role"), None, None
     now = datetime.now().strftime("%Y-%m-%d %I:%M %p")
     
@@ -81,18 +83,18 @@ def admin_profile():
         is_valid = False
         
         if role != "theatre_admin":
-            user = conn.execute("SELECT password FROM staff WHERE staff_id=?", (session.get("staff_id"),)).fetchone() if session.get("staff_id") else conn.execute("SELECT password FROM staff WHERE role=?", (role,)).fetchone()
-            if user and user["password"] == current_password: is_valid = True
+            user = db.staff.find_one({"_id": session.get("staff_id")}) if session.get("staff_id") else db.staff.find_one({"role": role})
+            if user and user.get("password") == current_password: is_valid = True
         else: 
-            user = conn.execute("SELECT password FROM admins WHERE admin_id=?", (session.get("admin_id"),)).fetchone() if session.get("admin_id") else conn.execute("SELECT password FROM admins WHERE theatre_id=?", (session.get("theatre_id"),)).fetchone()
-            if user and user["password"] == current_password: is_valid = True
+            user = db.admins.find_one({"_id": session.get("admin_id")}) if session.get("admin_id") else db.admins.find_one({"theatre_id": session.get("theatre_id")})
+            if user and user.get("password") == current_password: is_valid = True
                 
         if not is_valid:
             error = "Incorrect current password. Changes were not saved."
             return jsonify({"status": "error", "message": error}), 400
         else:
             if action == "update_profile":
-                new_name = request.form.get("name").strip()
+                new_name = (request.form.get("name") or "").strip()
                 file = request.files.get("profile_pic")
                 pic_path = None
                 if file and file.filename and allowed_file(file.filename):
@@ -101,44 +103,71 @@ def admin_profile():
                     pic_path, session["profile_pic"] = f"profile_pics/{filename}", f"profile_pics/{filename}"
 
                 if role != "theatre_admin":
-                    new_username, staff_id = request.form.get("username").strip(), session.get("staff_id")
-                    try:
-                        if staff_id:
-                            conn.execute("UPDATE staff SET name=?, username=?, profile_pic=? WHERE staff_id=?" if pic_path else "UPDATE staff SET name=?, username=? WHERE staff_id=?", (new_name, new_username, pic_path, staff_id) if pic_path else (new_name, new_username, staff_id))
-                        else:
-                            conn.execute("UPDATE staff SET name=?, username=?, profile_pic=? WHERE role=?" if pic_path else "UPDATE staff SET name=?, username=? WHERE role=?", (new_name, new_username, pic_path, role) if pic_path else (new_name, new_username, role))
-                        session["admin_name"], success = new_name, "Profile details updated successfully!"
-                    except sqlite3.IntegrityError:
-                        error = "That username is already taken. Please choose another one."
-                        return jsonify({"status": "error", "message": error}), 400
+                    new_username, staff_id = (request.form.get("username") or "").strip(), session.get("staff_id")
+                    
+                    if staff_id:
+                        if db.staff.find_one({"username": new_username, "_id": {"$ne": staff_id}}):
+                            return jsonify({"status": "error", "message": "That username is already taken. Please choose another one."}), 400
+                        update_fields = {"name": new_name, "username": new_username}
+                        if pic_path: update_fields["profile_pic"] = pic_path
+                        db.staff.update_one({"_id": staff_id}, {"$set": update_fields})
+                    else:
+                        if db.staff.find_one({"username": new_username}):
+                            return jsonify({"status": "error", "message": "That username is already taken. Please choose another one."}), 400
+                        update_fields = {"name": new_name, "username": new_username}
+                        if pic_path: update_fields["profile_pic"] = pic_path
+                        db.staff.update_many({"role": role}, {"$set": update_fields})
+
+                    session["admin_name"], success = new_name, "Profile details updated successfully!"
                 else:
-                    new_phone, new_theatre_name, new_city = request.form.get("phone").strip(), request.form.get("theatre_name").strip(), request.form.get("city").strip().lower()
-                    if pic_path: conn.execute("UPDATE admins SET profile_pic=? WHERE admin_id=?", (pic_path, session.get("admin_id")))
-                    conn.execute("INSERT INTO profile_requests (admin_id, theatre_id, request_type, new_name, new_phone, new_theatre_name, new_city, requested_at) VALUES (?, ?, 'profile details', ?, ?, ?, ?, ?)", (session.get("admin_id"), session.get("theatre_id"), new_name, new_phone, new_theatre_name, new_city, now))
+                    new_phone, new_theatre_name, new_city = (request.form.get("phone") or "").strip(), (request.form.get("theatre_name") or "").strip(), (request.form.get("city") or "").strip().lower()
+                    if pic_path: db.admins.update_one({"_id": session.get("admin_id")}, {"$set": {"profile_pic": pic_path}})
+                    
+                    req_id = get_next_id(db, "profile_requests")
+                    db.profile_requests.insert_one({
+                        "_id": req_id, "req_id": req_id, "admin_id": session.get("admin_id"),
+                        "theatre_id": session.get("theatre_id"), "request_type": "profile details",
+                        "new_name": new_name, "new_phone": new_phone, "new_theatre_name": new_theatre_name,
+                        "new_city": new_city, "requested_at": now, "status": "pending", "admin_viewed": 0
+                    })
                     success = "Picture updated (if uploaded). Text details sent to Staff for approval!"
             
             elif action == "change_password":
                 new_password = request.form.get("new_password")
                 if role != "theatre_admin":
-                    conn.execute("UPDATE staff SET password=? WHERE staff_id=?", (new_password, session.get("staff_id"))) if session.get("staff_id") else conn.execute("UPDATE staff SET password=? WHERE role=?", (new_password, role))
+                    if session.get("staff_id"):
+                        db.staff.update_one({"_id": session.get("staff_id")}, {"$set": {"password": new_password}})
+                    else:
+                        db.staff.update_many({"role": role}, {"$set": {"password": new_password}})
                     success = "Password changed successfully!"
                 else:
-                    conn.execute("INSERT INTO profile_requests (admin_id, theatre_id, request_type, new_password, requested_at) VALUES (?, ?, 'password', ?, ?)", (session.get("admin_id"), session.get("theatre_id"), new_password, now))
+                    req_id = get_next_id(db, "profile_requests")
+                    db.profile_requests.insert_one({
+                        "_id": req_id, "req_id": req_id, "admin_id": session.get("admin_id"),
+                        "theatre_id": session.get("theatre_id"), "request_type": "password",
+                        "new_password": new_password, "requested_at": now, "status": "pending", "admin_viewed": 0
+                    })
                     success = "Password change request sent to Staff for approval!"
-        conn.commit()
         return jsonify({"status": "success", "message": success if success else error})
 
-    raw_data = None
+    user_data = None
     if role != "theatre_admin":
-        raw_data = conn.execute("SELECT name, username, profile_pic FROM staff WHERE staff_id=?", (session.get("staff_id"),)).fetchone() if session.get("staff_id") else conn.execute("SELECT name, username, profile_pic FROM staff WHERE role=?", (role,)).fetchone()
+        staff_id = session.get("staff_id")
+        user = db.staff.find_one({"_id": staff_id}) if staff_id else db.staff.find_one({"role": role})
+        if user: user_data = {"name": user.get("name"), "username": user.get("username"), "profile_pic": user.get("profile_pic")}
     else:
-        raw_data = conn.execute("SELECT a.name, a.phone, a.profile_pic, t.name as theatre_name, t.city FROM admins a JOIN theatres t ON a.theatre_id = t.theatre_id WHERE a.admin_id=?", (session.get("admin_id"),)).fetchone() if session.get("admin_id") else conn.execute("SELECT a.name, a.phone, a.profile_pic, t.name as theatre_name, t.city FROM admins a JOIN theatres t ON a.theatre_id = t.theatre_id WHERE a.theatre_id=?", (session.get("theatre_id"),)).fetchone()
+        admin_id = session.get("admin_id")
+        user = db.admins.find_one({"_id": admin_id}) if admin_id else db.admins.find_one({"theatre_id": session.get("theatre_id")})
+        if user:
+            t = db.theatres.find_one({"_id": user.get("theatre_id")})
+            user_data = {
+                "name": user.get("name"), "phone": user.get("phone"), "profile_pic": user.get("profile_pic"),
+                "theatre_name": t.get("name") if t else "", "city": t.get("city") if t else ""
+            }
             
-    user_data = dict(raw_data) if raw_data else {}
     recent_request = None
     if role == 'theatre_admin':
-        req_row = conn.execute("SELECT * FROM profile_requests WHERE admin_id=? ORDER BY req_id DESC LIMIT 1", (session.get("admin_id"),)).fetchone()
-        recent_request = dict(req_row) if req_row else None
+        rec = list(db.profile_requests.find({"admin_id": session.get("admin_id")}).sort("req_id", -1).limit(1))
+        recent_request = rec[0] if rec else None
     
-    conn.close()
-    return jsonify({"status": "success", "user_data": user_data, "recent_request": recent_request, "error": error, "success": success})
+    return jsonify({"status": "success", "user_data": user_data or {}, "recent_request": recent_request, "error": error, "success": success})

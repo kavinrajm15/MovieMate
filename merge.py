@@ -1,10 +1,11 @@
 import json
-import sqlite3
+from pymongo import MongoClient
 import os
 from pathlib import Path
 from datetime import datetime, timedelta
 
-DB = "movies.db"
+MONGO_URI = "mongodb://localhost:27017/"
+DB_NAME = "moviemate"
 POSTER_FOLDER = os.path.join("static", "posters")
 
 TODAY = datetime.now().strftime("%Y%m%d")
@@ -16,86 +17,84 @@ JSON_FILES = [
 ]
 
 def init_db():
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
 
-    cur.executescript("""
-    CREATE TABLE IF NOT EXISTS movies (
-        movie_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT UNIQUE,
-        image TEXT,
-        duration TEXT,
-        genres TEXT,
-        certificate TEXT
-    );
+    db.movies.create_index("title", unique=True)
+    db.theatres.create_index([("name", 1), ("city", 1)], unique=True)
+    db.showtimes.create_index([("movie_id", 1), ("theatre_id", 1), ("show_time", 1), ("format", 1), ("date", 1)], unique=True)
+    return db
 
-    CREATE TABLE IF NOT EXISTS theatres (
-        theatre_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        city TEXT,
-        UNIQUE(name, city)
-    );
+from pymongo import ReturnDocument
 
-    CREATE TABLE IF NOT EXISTS showtimes (
-        showtime_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        movie_id INTEGER,
-        theatre_id INTEGER,
-        show_time TEXT,
-        format TEXT,
-        date TEXT,
-        UNIQUE(movie_id, theatre_id, show_time, format, date)
-    );
-    """)
+def get_next_id(db, name):
+    ret = db.counters.find_one_and_update(
+        {"_id": name},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER
+    )
+    return ret["seq"]
 
-    conn.commit()
-    return conn
+
+import re
+
+def normalize_title(title):
+    t = title.lower()
+    # Replace common isolated Roman numerals
+    t = re.sub(r'\bii\b', '2', t)
+    t = re.sub(r'\biii\b', '3', t)
+    t = re.sub(r'\biv\b', '4', t)
+    t = re.sub(r'\bv\b', '5', t)
+    # Remove all spaces and punctuation
+    t = re.sub(r'[^a-z0-9]', '', t)
+    return t
 
 def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def upsert_movie(cur, m):
+def upsert_movie(db, m):
     title = m["title"].strip()
+    norm_title = normalize_title(title)
 
-    cur.execute("""
-        INSERT INTO movies (title, image, duration, genres, certificate)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(title) DO UPDATE SET
-            image=excluded.image,
-            duration=excluded.duration,
-            genres=excluded.genres,
-            certificate=excluded.certificate
-    """, (
-        title,
-        m.get("image"),
-        m.get("details", {}).get("duration"),
-        ",".join(m.get("details", {}).get("genres", [])),
-        m.get("details", {}).get("certificate")
-    ))
+    update_data = {
+        "image": m.get("image"),
+        "duration": m.get("details", {}).get("duration"),
+        "genres": ",".join(m.get("details", {}).get("genres", [])),
+        "certificate": m.get("details", {}).get("certificate"),
+        "normalized_title": norm_title
+    }
 
-    cur.execute("SELECT movie_id FROM movies WHERE title=?", (title,))
-    return cur.fetchone()[0], title
+    # Better Check: Search using the exact normalized match
+    movie = db.movies.find_one({"normalized_title": norm_title})
+    
+    # Fallback to exact title just in case it's an old unnormalized record
+    if not movie:
+        movie = db.movies.find_one({"title": title})
+    if not movie:
+        new_id = get_next_id(db, "movies")
+        update_data["_id"] = new_id
+        update_data["title"] = title
+        db.movies.insert_one(update_data)
+        return new_id, title
+    else:
+        db.movies.update_one({"_id": movie["_id"]}, {"$set": update_data})
+        return movie["_id"], title
 
-def upsert_theatre(cur, name, city):
+def upsert_theatre(db, name, city):
     name = name.strip()
     city = city.lower().strip()
 
-    cur.execute("""
-        INSERT INTO theatres (name, city)
-        VALUES (?, ?)
-        ON CONFLICT(name, city) DO NOTHING
-    """, (name, city))
+    theatre = db.theatres.find_one({"name": name, "city": city})
+    if not theatre:
+        new_id = get_next_id(db, "theatres")
+        db.theatres.insert_one({"_id": new_id, "name": name, "city": city})
+        return new_id
+    else:
+        return theatre["_id"]
 
-    cur.execute("""
-        SELECT theatre_id FROM theatres
-        WHERE name=? AND city=?
-    """, (name, city))
-
-    return cur.fetchone()[0]
-
-def merge_json(conn, data):
-    cur = conn.cursor()
-
+def merge_json(db, data):
     for city, city_data in data.get("cities", {}).items():
         city = city.lower().strip()
 
@@ -113,69 +112,59 @@ def merge_json(conn, data):
             if not has_valid_dates:
                 continue
 
-            movie_id, title = upsert_movie(cur, movie)
+            movie_id, title = upsert_movie(db, movie)
 
             for theatre in movie.get("theatres", []):
-                theatre_id = upsert_theatre(cur, theatre["name"], city)
+                theatre_id = upsert_theatre(db, theatre["name"], city)
 
                 for show_date, show_list in theatre.get("dates", {}).items():
                     if show_date < CUTOFF_DATE:
                         continue
                     
                     for st in show_list:
-                        cur.execute("""
-                            INSERT OR IGNORE INTO showtimes
-                            (movie_id, theatre_id, show_time, format, date)
-                            VALUES (?, ?, ?, ?, ?)
-                        """, (
-                            movie_id,
-                            theatre_id,
-                            st["time"],
-                            st.get("format"),
-                            show_date
-                        ))
+                        existing_st = db.showtimes.find_one({
+                            "movie_id": movie_id,
+                            "theatre_id": theatre_id,
+                            "show_time": st["time"],
+                            "format": st.get("format", "2D"),
+                            "date": show_date
+                        })
+                        if not existing_st:
+                            new_id = get_next_id(db, "showtimes")
+                            db.showtimes.insert_one({
+                                "_id": new_id,
+                                "movie_id": movie_id,
+                                "theatre_id": theatre_id,
+                                "show_time": st["time"],
+                                "format": st.get("format", "2D"),
+                                "date": show_date
+                            })
 
-    conn.commit()
-
-def remove_expired_showtimes(conn):
+def remove_expired_showtimes(db):
     print(f"Deleting showtimes older than 7 days ({CUTOFF_DATE}) from database...")
-    cur = conn.cursor()
-    cur.execute("DELETE FROM showtimes WHERE date < ?", (CUTOFF_DATE,))
-    deleted = cur.rowcount
-    conn.commit()
-    print(f"Removed {deleted} expired showtimes.")
+    result = db.showtimes.delete_many({"date": {"$lt": CUTOFF_DATE}})
+    print(f"Removed {result.deleted_count} expired showtimes.")
 
-def remove_old_movies(conn):
+def remove_old_movies(db):
     print("Checking for orphaned movies (no showtimes left in last 7 days)...")
 
-    cur = conn.cursor()
+    active_movie_ids = db.showtimes.distinct("movie_id")
+    orphaned_movies = db.movies.find({"_id": {"$nin": active_movie_ids}})
     
-    cur.execute("""
-        SELECT movie_id, title FROM movies 
-        WHERE movie_id NOT IN (SELECT DISTINCT movie_id FROM showtimes)
-    """)
-    rows = cur.fetchall()
+    for movie in orphaned_movies:
+        print("Removing fully expired movie (inactive for >7 days):", movie.get("title"))
+        db.movies.delete_one({"_id": movie["_id"]})
 
-    for movie_id, title in rows:
-        print("Removing fully expired movie (inactive for >7 days):", title)
-        cur.execute("DELETE FROM movies WHERE movie_id=?", (movie_id,))
-
-    conn.commit()
-
-def cleanup_unused_images(conn):
+def cleanup_unused_images(db):
     print("Cleaning unused images...")
 
     if not os.path.exists(POSTER_FOLDER):
         return
 
-    cur = conn.cursor()
-    cur.execute("SELECT image FROM movies")
-    rows = cur.fetchall()
-
     used_images = set()
-    for r in rows:
-        if r[0]:
-            used_images.add(os.path.basename(r[0]))
+    for movie in db.movies.find({}, {"image": 1}):
+        if movie.get("image"):
+            used_images.add(os.path.basename(movie["image"]))
 
     for filename in os.listdir(POSTER_FOLDER):
         path = os.path.join(POSTER_FOLDER, filename)
@@ -187,20 +176,19 @@ def cleanup_unused_images(conn):
     print("Image cleanup complete.")
 
 if __name__ == "__main__":
-    print("Updating movies.db incrementally...")
+    print("Updating MongoDB incrementally...")
 
-    conn = init_db()
+    db = init_db()
     
-    remove_expired_showtimes(conn)
+    remove_expired_showtimes(db)
     
     for jf in JSON_FILES:
         if Path(jf).exists():
             print(f"Merging {jf}")
-            merge_json(conn, load_json(jf))
+            merge_json(db, load_json(jf))
         else:
             print(f"Missing file: {jf}")
-    remove_old_movies(conn)
-    cleanup_unused_images(conn)
+    remove_old_movies(db)
+    cleanup_unused_images(db)
 
-    conn.close()
     print("Database update complete.")

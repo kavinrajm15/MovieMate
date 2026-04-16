@@ -1,78 +1,103 @@
-import sqlite3
-from core.database import get_db
+from core.database import get_db, get_next_id
+# ── Read ──
 
-def setup_tables():
-    conn = get_db()
-    
-    conn.executescript("""
-    CREATE TABLE IF NOT EXISTS movies (
-        movie_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT, image TEXT, duration TEXT, genres TEXT, certificate TEXT
-    );
-    CREATE TABLE IF NOT EXISTS theatres (
-        theatre_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT, city TEXT
-    );
-    CREATE TABLE IF NOT EXISTS showtimes (
-        showtime_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        movie_id INTEGER, theatre_id INTEGER, show_time TEXT, format TEXT, date TEXT,
-        FOREIGN KEY(movie_id) REFERENCES movies(movie_id),
-        FOREIGN KEY(theatre_id) REFERENCES theatres(theatre_id)
-    );
-    CREATE TABLE IF NOT EXISTS admins (
-        admin_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT, phone TEXT UNIQUE, password TEXT, theatre_id INTEGER, profile_pic TEXT,
-        status TEXT DEFAULT 'approved', created_at TEXT,
-        FOREIGN KEY(theatre_id) REFERENCES theatres(theatre_id)
-    );
-    CREATE TABLE IF NOT EXISTS staff (
-        staff_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE, password TEXT, role TEXT, name TEXT, profile_pic TEXT, manager_id INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS staff_permissions (
-        staff_id INTEGER PRIMARY KEY,
-        permissions TEXT NOT NULL DEFAULT '{}',
-        FOREIGN KEY(staff_id) REFERENCES staff(staff_id) ON DELETE CASCADE
-    );
-    CREATE TABLE IF NOT EXISTS movie_requests (
-        request_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        theatre_id INTEGER, title TEXT, image TEXT, duration TEXT, genres TEXT, certificate TEXT,
-        status TEXT DEFAULT 'pending', feedback TEXT, created_at TEXT, reviewed_by TEXT,
-        reviewed_role TEXT, reviewed_at TEXT, admin_viewed INTEGER DEFAULT 0,
-        FOREIGN KEY(theatre_id) REFERENCES theatres(theatre_id)
-    );
-    CREATE TABLE IF NOT EXISTS profile_requests (
-        req_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        admin_id INTEGER, theatre_id INTEGER, request_type TEXT, new_name TEXT, new_phone TEXT,
-        new_theatre_name TEXT, new_city TEXT, new_password TEXT, status TEXT DEFAULT 'pending',
-        requested_at TEXT, reviewed_by TEXT, reviewed_role TEXT, reviewed_at TEXT, admin_viewed INTEGER DEFAULT 0,
-        FOREIGN KEY(admin_id) REFERENCES admins(admin_id)
-    );
-    """)
+def get_all_theatres(sort_by=None):
+    """Return all theatres, optionally sorted. Default: city → name."""
+    db = get_db()
+    sort = sort_by or [("city", 1), ("name", 1)]
+    return list(db.theatres.find().sort(sort))
 
-    alterations = [
-        "ALTER TABLE movie_requests ADD COLUMN feedback TEXT",
-        "ALTER TABLE movie_requests ADD COLUMN created_at TEXT",
-        "ALTER TABLE movie_requests ADD COLUMN reviewed_by TEXT",
-        "ALTER TABLE movie_requests ADD COLUMN reviewed_role TEXT",
-        "ALTER TABLE movie_requests ADD COLUMN reviewed_at TEXT",
-        "ALTER TABLE admins ADD COLUMN profile_pic TEXT",
-        "ALTER TABLE staff ADD COLUMN profile_pic TEXT",
-        "ALTER TABLE staff ADD COLUMN manager_id INTEGER",
-        "ALTER TABLE movie_requests ADD COLUMN admin_viewed INTEGER DEFAULT 0",
-        "ALTER TABLE profile_requests ADD COLUMN admin_viewed INTEGER DEFAULT 0",
-        "ALTER TABLE admins ADD COLUMN status TEXT DEFAULT 'approved'",
-        "ALTER TABLE admins ADD COLUMN created_at TEXT",
-    ]
-    for query in alterations:
-        try:
-            conn.execute(query)
-        except sqlite3.OperationalError:
-            pass
 
-    staff_count = conn.execute("SELECT COUNT(*) FROM staff").fetchone()[0]
-    if staff_count == 0:
-        conn.execute("INSERT INTO staff (username, password, role, name) VALUES ('superadmin', '4321', 'superadmin', 'Owner (Superadmin)')")
+def get_theatre_by_id(theatre_id: int):
+    """Return a single theatre document by its integer _id."""
+    db = get_db()
+    return db.theatres.find_one({"_id": theatre_id})
 
-    conn.commit()
-    conn.close()
+
+def get_theatres_by_city(city: str):
+    """Return all theatres in a given city (case-insensitive)."""
+    db = get_db()
+    return list(db.theatres.find({"city": city.lower()}).sort("name", 1))
+
+
+def get_theatre_city(theatre_id: int) -> str | None:
+    """Return the city string for a theatre, or None if not found."""
+    t = get_theatre_by_id(theatre_id)
+    return t.get("city") if t else None
+
+
+def get_distinct_cities() -> list[str]:
+    """Return a sorted list of all unique cities that have theatres."""
+    db = get_db()
+    return sorted(db.theatres.distinct("city"))
+
+
+def theatre_exists(theatre_id: int) -> bool:
+    """Quick existence check."""
+    db = get_db()
+    return db.theatres.count_documents({"_id": theatre_id}, limit=1) > 0
+
+
+# ── Write ──────────────────────────────────────────────────────────────────────
+
+def create_theatre(name: str, city: str) -> int:
+    """Insert a new theatre and return its new integer ID."""
+    db = get_db()
+    new_id = get_next_id(db, "theatres")
+    db.theatres.insert_one({
+        "_id":        new_id,
+        "theatre_id": new_id,
+        "name":       name.strip(),
+        "city":       city.lower(),
+    })
+    return new_id
+
+
+def update_theatre(theatre_id: int, name: str, city: str) -> bool:
+    """Update name and city for an existing theatre. Returns True if updated."""
+    db = get_db()
+    result = db.theatres.update_one(
+        {"_id": theatre_id},
+        {"$set": {"name": name.strip(), "city": city.lower()}}
+    )
+    return result.modified_count > 0
+
+
+def delete_theatre(theatre_id: int):
+    """
+    Delete a theatre and cascade-delete all its showtimes.
+    Returns the number of showtimes deleted.
+    """
+    db = get_db()
+    deleted_st = db.showtimes.delete_many({"theatre_id": theatre_id}).deleted_count
+    db.theatres.delete_one({"_id": theatre_id})
+    return deleted_st
+
+
+# ── Showtime helpers ───────────────────────────────────────────────────────────
+
+def get_movies_for_theatre(theatre_id: int) -> list:
+    """Return all movie documents that have at least one showtime at this theatre."""
+    db = get_db()
+    movie_ids = db.showtimes.distinct("movie_id", {"theatre_id": theatre_id})
+    return list(db.movies.find({"_id": {"$in": movie_ids}}))
+
+
+def get_schedule_for_theatre_movie(theatre_id: int, movie_id: int) -> dict:
+    """
+    Return a date-keyed schedule dict for a specific theatre/movie combo.
+    Example: {"20250415": [{"showtime_id": 1, "show_time": "10:00 AM", ...}]}
+    """
+    db = get_db()
+    rows = list(db.showtimes.find(
+        {"theatre_id": theatre_id, "movie_id": movie_id},
+        {"showtime_id": 1, "date": 1, "show_time": 1, "format": 1, "_id": 1}
+    ).sort([("date", 1), ("show_time", 1)]))
+
+    schedule: dict = {}
+    for s in rows:
+        dt = s.get("date")
+        if dt not in schedule:
+            schedule[dt] = []
+        schedule[dt].append(s)
+    return schedule

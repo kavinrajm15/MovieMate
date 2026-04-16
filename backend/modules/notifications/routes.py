@@ -9,37 +9,46 @@ def notification_count():
     if not session.get("admin"):
         return jsonify({"error": "Unauthorized"}), 401
 
-    conn = get_db()
+    db = get_db()
     role = session.get("role")
     notifications, total = [], 0
 
     if role == "theatre_admin":
         theatre_id = session.get("theatre_id")
         admin_id   = session.get("admin_id")
-        movies   = conn.execute("SELECT request_id, title, status, 'movie' as type, reviewed_at as time FROM movie_requests WHERE theatre_id=? AND status != 'pending' AND admin_viewed=0", (theatre_id,)).fetchall()
-        profiles = conn.execute("SELECT req_id as request_id, request_type, status, 'profile' as type, reviewed_at as time FROM profile_requests WHERE admin_id=? AND status != 'pending' AND admin_viewed=0", (admin_id,)).fetchall()
-        for m in movies:   notifications.append({"id": m["request_id"], "title": m["title"],        "status": m["status"], "type": "movie",   "time": m["time"]})
-        for p in profiles: notifications.append({"id": p["request_id"], "request_type": p["request_type"], "status": p["status"], "type": "profile", "time": p["time"]})
-        total = len(movies) + len(profiles)
+        
+        movies_cursor = db.movie_requests.find({"theatre_id": theatre_id, "status": {"$ne": "pending"}, "admin_viewed": 0})
+        profiles_cursor = db.profile_requests.find({"admin_id": admin_id, "status": {"$ne": "pending"}, "admin_viewed": 0})
+        
+        for m in movies_cursor:   
+            notifications.append({"id": m.get("request_id"), "title": m.get("title"), "status": m.get("status"), "type": "movie", "time": m.get("reviewed_at")})
+        for p in profiles_cursor: 
+            notifications.append({"id": p.get("req_id"), "request_type": p.get("request_type"), "status": p.get("status"), "type": "profile", "time": p.get("reviewed_at")})
+        total = len(notifications)
 
     else:
-        # Staff roles — only include notification types they have permission to view
+        # Staff roles
         if check_perm("movie_requests", "view"):
-            movies = conn.execute("SELECT r.request_id, t.name as theatre_name, 'movie' as type, r.created_at as time FROM movie_requests r JOIN theatres t ON r.theatre_id = t.theatre_id WHERE r.status='pending' ORDER BY r.request_id DESC LIMIT 10").fetchall()
-            for m in movies: notifications.append({"id": m["request_id"], "theatre": m["theatre_name"], "type": "movie", "time": m["time"]})
-            total += conn.execute("SELECT COUNT(*) FROM movie_requests WHERE status='pending'").fetchone()[0]
+            movies = list(db.movie_requests.find({"status": "pending"}).sort("request_id", -1).limit(10))
+            for m in movies: 
+                t = db.theatres.find_one({"_id": m.get("theatre_id")})
+                notifications.append({"id": m.get("request_id"), "theatre": t.get("name") if t else "", "type": "movie", "time": m.get("created_at")})
+            total += db.movie_requests.count_documents({"status": "pending"})
 
         if check_perm("profile_requests", "view"):
-            profiles = conn.execute("SELECT p.req_id as request_id, t.name as theatre_name, 'profile' as type, p.requested_at as time FROM profile_requests p JOIN theatres t ON p.theatre_id = t.theatre_id WHERE p.status='pending' ORDER BY p.req_id DESC LIMIT 10").fetchall()
-            for p in profiles: notifications.append({"id": p["request_id"], "theatre": p["theatre_name"], "type": "profile", "time": p["time"]})
-            total += conn.execute("SELECT COUNT(*) FROM profile_requests WHERE status='pending'").fetchone()[0]
+            profiles = list(db.profile_requests.find({"status": "pending"}).sort("req_id", -1).limit(10))
+            for p in profiles: 
+                t = db.theatres.find_one({"_id": p.get("theatre_id")})
+                notifications.append({"id": p.get("req_id"), "theatre": t.get("name") if t else "", "type": "profile", "time": p.get("requested_at")})
+            total += db.profile_requests.count_documents({"status": "pending"})
 
         if check_perm("partner_requests", "view"):
-            partner_reqs = conn.execute("SELECT a.admin_id as request_id, t.name as theatre_name, 'partner signup' as type, a.created_at as time FROM admins a JOIN theatres t ON a.theatre_id = t.theatre_id WHERE a.status='pending' ORDER BY a.admin_id DESC LIMIT 10").fetchall()
-            for pa in partner_reqs: notifications.append({"id": pa["request_id"], "theatre": pa["theatre_name"], "type": "partner signup", "time": pa["time"]})
-            total += conn.execute("SELECT COUNT(*) FROM admins WHERE status='pending'").fetchone()[0]
+            partner_reqs = list(db.admins.find({"status": "pending"}).sort("admin_id", -1).limit(10))
+            for pa in partner_reqs: 
+                t = db.theatres.find_one({"_id": pa.get("theatre_id")})
+                notifications.append({"id": pa.get("admin_id"), "theatre": t.get("name") if t else "", "type": "partner signup", "time": pa.get("created_at")})
+            total += db.admins.count_documents({"status": "pending"})
 
-    conn.close()
     notifications.sort(key=lambda x: x.get("time") or "", reverse=True)
     return jsonify({"status": "success", "total": total, "items": notifications[:10]})
 
@@ -48,9 +57,7 @@ def notification_count():
 def mark_notifications_viewed():
     if not session.get("admin") or session.get("role") != "theatre_admin":
         return jsonify({"error": "Unauthorized"}), 401
-    conn = get_db()
-    conn.execute("UPDATE movie_requests SET admin_viewed=1 WHERE theatre_id=? AND status != 'pending'", (session.get("theatre_id"),))
-    conn.execute("UPDATE profile_requests SET admin_viewed=1 WHERE admin_id=? AND status != 'pending'", (session.get("admin_id"),))
-    conn.commit()
-    conn.close()
+    db = get_db()
+    db.movie_requests.update_many({"theatre_id": session.get("theatre_id"), "status": {"$ne": "pending"}}, {"$set": {"admin_viewed": 1}})
+    db.profile_requests.update_many({"admin_id": session.get("admin_id"), "status": {"$ne": "pending"}}, {"$set": {"admin_viewed": 1}})
     return jsonify({"status": "success", "message": "Notifications cleared"})

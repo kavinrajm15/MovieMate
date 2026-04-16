@@ -22,10 +22,10 @@ def check_staff_access(allowed_roles):
 
 def check_perm(module, action):
     """
-    Dynamic permission check against staff_permissions table.
-    - superadmin: always True
-    - theatre_admin: always False (they have their own routes)
-    - all other roles: check staff_permissions DB row
+    Dynamic permission check against staff_permissions collection (MongoDB).
+    - superadmin:     always True
+    - theatre_admin:  always False (they have their own routes)
+    - all other roles: check staff_permissions collection
     """
     if not session.get("admin"):
         return False
@@ -34,20 +34,20 @@ def check_perm(module, action):
         return True
     if role == "theatre_admin":
         return False
-    # Dynamic check from DB
+
     staff_id = session.get("staff_id")
     if not staff_id:
         return False
+
     from core.database import get_db
-    conn = get_db()
-    row = conn.execute(
-        "SELECT permissions FROM staff_permissions WHERE staff_id=?", (staff_id,)
-    ).fetchone()
-    conn.close()
+    db  = get_db()
+    row = db.staff_permissions.find_one({"_id": staff_id})
     if not row:
         return False
+
     try:
-        perms = json.loads(row["permissions"])
+        raw   = row.get("permissions", {})
+        perms = json.loads(raw) if isinstance(raw, str) else raw
         return bool(perms.get(module, {}).get(action, False))
     except Exception:
-        return False
+        return False

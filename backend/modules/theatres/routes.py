@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request, session
-from core.database import get_db
+from core.database import get_db, get_next_id
 from core.security import check_perm
 
 theatres_bp = Blueprint('theatres', __name__)
@@ -8,10 +8,9 @@ theatres_bp = Blueprint('theatres', __name__)
 def admin_theatres():
     if not check_perm("theatres", "view"):
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
-    theatres = conn.execute("SELECT * FROM theatres ORDER BY city, name").fetchall()
-    conn.close()
-    return jsonify({"status": "success", "theatres": [dict(t) for t in theatres]})
+    db = get_db()
+    theatres = list(db.theatres.find().sort([("city", 1), ("name", 1)]))
+    return jsonify({"status": "success", "theatres": theatres})
 
 @theatres_bp.route("/admin/theatre/add", methods=["POST"])
 def add_theatre():
@@ -19,21 +18,31 @@ def add_theatre():
         return jsonify({"error": "Unauthorized"}), 403
     name, city = request.form.get("name"), request.form.get("city")
     if name and city:
-        conn = get_db()
-        conn.execute("INSERT INTO theatres (name, city) VALUES (?, ?)", (name.strip(), city.lower()))
-        conn.commit()
-        conn.close()
+        db = get_db()
+        new_id = get_next_id(db, "theatres")
+        db.theatres.insert_one({
+            "_id": new_id,
+            "theatre_id": new_id,
+            "name": name.strip(),
+            "city": city.lower()
+        })
     return jsonify({"status": "success", "message": "Theatre added"})
 
 @theatres_bp.route("/admin/theatre/delete/<int:theatre_id>", methods=["POST"])
 def delete_theatre(theatre_id):
     if not check_perm("theatres", "delete"):
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
-    conn.execute("DELETE FROM showtimes WHERE theatre_id = ?", (theatre_id,))
-    conn.execute("DELETE FROM theatres WHERE theatre_id = ?", (theatre_id,))
-    conn.commit()
-    conn.close()
+    db = get_db()
+
+    st_ids = db.showtimes.distinct("_id", {"theatre_id": theatre_id})
+    if st_ids:
+        db.bookings.delete_many({
+            "showtime_id": {"$in": st_ids},
+            "status": "locked"   # only ghost locks — confirmed bookings stay
+        })
+
+    db.showtimes.delete_many({"theatre_id": theatre_id})
+    db.theatres.delete_one({"_id": theatre_id})
     return jsonify({"status": "success", "message": "Theatre deleted"})
 
 @theatres_bp.route("/admin/theatre/view/<int:theatre_id>")
@@ -42,12 +51,27 @@ def admin_theatre_view(theatre_id):
         return jsonify({"error": "Unauthorized"}), 401
     if session.get("role") == "theatre_admin" and session.get("theatre_id") != theatre_id:
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
-    theatre = conn.execute("SELECT * FROM theatres WHERE theatre_id = ?", (theatre_id,)).fetchone()
-    all_movies = conn.execute("SELECT movie_id, title FROM movies ORDER BY title").fetchall()
-    movies = conn.execute("SELECT DISTINCT m.* FROM showtimes s JOIN movies m ON s.movie_id = m.movie_id WHERE s.theatre_id = ?", (theatre_id,)).fetchall()
-    conn.close()
-    return jsonify({"status": "success", "theatre": dict(theatre) if theatre else None, "all_movies": [dict(m) for m in all_movies], "movies": [dict(m) for m in movies]})
+
+    db = get_db()
+    theatre    = db.theatres.find_one({"_id": theatre_id})
+    all_movies = list(db.movies.find({}, {"movie_id": 1, "title": 1, "_id": 1}).sort("title", 1))
+
+    # Include movies from live showtimes AND from historical booking snapshots
+    # so the list stays correct after merge.py removes old showtimes.
+    live_m_ids = db.showtimes.distinct("movie_id", {"theatre_id": theatre_id})
+    hist_m_ids = [mid for mid in
+                  db.bookings.distinct("movie_id", {"theatre_id": theatre_id, "status": "confirmed"})
+                  if mid is not None]
+    all_m_ids  = list(set(live_m_ids) | set(hist_m_ids))
+    movies     = list(db.movies.find({"_id": {"$in": all_m_ids}}))
+
+    # Normalise: guarantee movie_id is present for legacy records that only have _id
+    for m in all_movies:
+        m["movie_id"] = m.get("movie_id") or m["_id"]
+    for m in movies:
+        m["movie_id"] = m.get("movie_id") or m["_id"]
+
+    return jsonify({"status": "success", "theatre": theatre, "all_movies": all_movies, "movies": movies})
 
 @theatres_bp.route("/admin/theatre/<int:theatre_id>/movie/<int:movie_id>")
 def admin_theatre_movie_showtimes(theatre_id, movie_id):
@@ -55,14 +79,18 @@ def admin_theatre_movie_showtimes(theatre_id, movie_id):
         return jsonify({"error": "Unauthorized"}), 401
     if session.get("role") == "theatre_admin" and session.get("theatre_id") != theatre_id:
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
-    theatre = conn.execute("SELECT * FROM theatres WHERE theatre_id = ?", (theatre_id,)).fetchone()
-    movie = conn.execute("SELECT * FROM movies WHERE movie_id = ?", (movie_id,)).fetchone()
-    showtimes_raw = conn.execute("SELECT showtime_id, date, show_time, format FROM showtimes WHERE theatre_id = ? AND movie_id = ? ORDER BY date, show_time", (theatre_id, movie_id)).fetchall()
-    conn.close()
+    db = get_db()
+    theatre      = db.theatres.find_one({"_id": theatre_id})
+    movie        = db.movies.find_one({"_id": movie_id})
+    showtimes_raw = list(db.showtimes.find(
+        {"theatre_id": theatre_id, "movie_id": movie_id},
+        {"showtime_id": 1, "date": 1, "show_time": 1, "format": 1, "_id": 1}
+    ).sort([("date", 1), ("show_time", 1)]))
+
     schedule = {}
     for s in showtimes_raw:
-        dt = s["date"]
-        if dt not in schedule: schedule[dt] = []
-        schedule[dt].append(dict(s))
-    return jsonify({"status": "success", "theatre": dict(theatre) if theatre else None, "movie": dict(movie) if movie else None, "schedule": schedule})
+        dt = s.get("date")
+        if dt not in schedule:
+            schedule[dt] = []
+        schedule[dt].append(s)
+    return jsonify({"status": "success", "theatre": theatre, "movie": movie, "schedule": schedule})

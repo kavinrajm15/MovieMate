@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request
-from core.database import get_db
+from core.database import get_db, get_next_id
 from core.security import check_perm
 
 cities_bp = Blueprint('cities', __name__)
@@ -8,10 +8,9 @@ cities_bp = Blueprint('cities', __name__)
 def admin_cities():
     if not check_perm("cities", "view"):
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
-    cities = conn.execute("SELECT DISTINCT city FROM theatres ORDER BY city").fetchall()
-    conn.close()
-    return jsonify({"status": "success", "cities": [dict(c) for c in cities]})
+    db     = get_db()
+    cities = sorted(db.theatres.distinct("city"))
+    return jsonify({"status": "success", "cities": [{"city": c} for c in cities]})
 
 @cities_bp.route("/admin/city/add", methods=["POST"])
 def add_city():
@@ -19,29 +18,35 @@ def add_city():
         return jsonify({"error": "Unauthorized"}), 403
     city_name = request.form.get("city_name", "").strip()
     if city_name:
-        conn = get_db()
-        if not conn.execute("SELECT 1 FROM theatres WHERE city = ?", (city_name.lower(),)).fetchone():
-            conn.execute("INSERT INTO theatres (name, city) VALUES (?, ?)", ("Main Screen", city_name.lower()))
-            conn.commit()
-        conn.close()
+        db = get_db()
+        if not db.theatres.find_one({"city": city_name.lower()}):
+            new_id = get_next_id(db, "theatres")
+            db.theatres.insert_one({"_id": new_id, "theatre_id": new_id, "name": "Main Screen", "city": city_name.lower()})
     return jsonify({"status": "success", "message": "City added"})
 
 @cities_bp.route("/admin/city/delete/<city>", methods=["POST"])
 def delete_city(city):
     if not check_perm("cities", "delete"):
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
-    conn.execute("DELETE FROM showtimes WHERE theatre_id IN (SELECT theatre_id FROM theatres WHERE city = ?)", (city,))
-    conn.execute("DELETE FROM theatres WHERE city = ?", (city,))
-    conn.commit()
-    conn.close()
+    db    = get_db()
+    t_ids = db.theatres.distinct("_id", {"city": city})
+
+    if t_ids:
+        st_ids = db.showtimes.distinct("_id", {"theatre_id": {"$in": t_ids}})
+        if st_ids:
+            db.bookings.delete_many({
+                "showtime_id": {"$in": st_ids},
+                "status": "locked"
+            })
+
+    db.showtimes.delete_many({"theatre_id": {"$in": t_ids}})
+    db.theatres.delete_many({"city": city})
     return jsonify({"status": "success", "message": "City deleted"})
 
 @cities_bp.route("/admin/city/<city>/theatres")
 def admin_city_theatres(city):
     if not check_perm("cities", "view"):
         return jsonify({"error": "Unauthorized"}), 403
-    conn = get_db()
-    theatres = conn.execute("SELECT * FROM theatres WHERE city = ? ORDER BY name", (city.lower(),)).fetchall()
-    conn.close()
-    return jsonify({"status": "success", "theatres": [dict(t) for t in theatres], "city": city})
+    db       = get_db()
+    theatres = list(db.theatres.find({"city": city.lower()}).sort("name", 1))
+    return jsonify({"status": "success", "theatres": theatres, "city": city})
