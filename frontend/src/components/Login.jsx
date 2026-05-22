@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import toast from "react-hot-toast";
 
 const Login = () => {
   const [formData, setFormData]         = useState({ username: "", password: "" });
@@ -42,6 +43,9 @@ const Login = () => {
         navigate('/admin/dashboard', { replace: true });
       } else {
         setError(data.message || "Login failed");
+        if (data.message && data.message.toLowerCase().includes("inactive")) {
+          toast.error(data.message);
+        }
       }
     } catch (err) {
       setError("Server connection error");

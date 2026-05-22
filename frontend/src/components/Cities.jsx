@@ -3,6 +3,7 @@ import { useNavigate, useOutletContext } from 'react-router-dom';
 import { MdDelete } from "react-icons/md";
 import { FaCity } from "react-icons/fa";
 import { useAuth } from '../context/AuthContext';
+import { confirmAction } from '../utils/confirm';
 
 const Cities = () => {
   const { user } = useOutletContext();
@@ -73,7 +74,12 @@ const Cities = () => {
 
   const handleDeleteCity = async (e, cityName) => {
     e.stopPropagation();
-    if (!window.confirm(`Delete ${cityName} and all its theatres?`)) return;
+    const confirmed = await confirmAction({
+      title: 'Delete City?',
+      text: `Are you sure you want to delete ${cityName} and all its theatres? This action cannot be undone.`,
+      confirmText: 'Delete'
+    });
+    if (!confirmed) return;
     await fetch(`http://localhost:5000/admin/city/delete/${cityName}`, {
       method: 'POST', credentials: 'include'
     });
@@ -108,16 +114,16 @@ const Cities = () => {
       {/* ══════════════════════════════════════
           PAGE HEADER
       ══════════════════════════════════════ */}
-      <header className="flex justify-between items-center mb-[30px] flex-wrap gap-4
-        px-[30px] py-5 rounded-[20px]
-        bg-white/40 dark:bg-[rgba(30,30,30,0.95)]
-        backdrop-blur-[10px]
+      <header className="sticky top-0 z-30 flex justify-between items-center mb-[30px] flex-wrap gap-4
+        px-[30px] py-3 rounded-[20px]
+        bg-white/80 dark:bg-[rgba(30,30,30,0.98)]
+        backdrop-blur-[15px]
         border border-white/50 dark:border-[#333333]
         shadow-[0_4px_15px_rgba(0,0,0,0.05)]
         dark:shadow-[0_4px_20px_rgba(0,0,0,0.4)]">
 
         <div>
-          <h1 className="text-[1.8rem] font-bold text-slate-800 dark:text-white mb-1">
+          <h1 className="text-[1.5rem] font-bold text-slate-800 dark:text-white mb-0.5">
             Manage Cities
           </h1>
           <p className="text-[#4a4e69] dark:text-[#B3B3B3] text-[0.9rem]">
@@ -132,10 +138,10 @@ const Cities = () => {
             placeholder="Search cities..."
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            className="px-5 py-3 rounded-full w-[250px]
+            className="px-4 py-2 rounded-full w-[250px]
               border border-white/60 dark:border-[#333333]
               bg-white/60 dark:bg-[#121212]
-              text-slate-800 dark:text-white text-[0.95rem]
+              text-slate-800 dark:text-white text-[0.9rem]
               placeholder-[#9ea1bc] dark:placeholder-[#666666]
               outline-none transition-all duration-300
               focus:bg-white dark:focus:bg-[#121212]
@@ -147,7 +153,7 @@ const Cities = () => {
           {canAdd && (
             <button
               onClick={() => setIsModalOpen(true)}
-              className="px-6 py-3 rounded-full font-bold tracking-wide text-white
+              className="px-5 py-2 rounded-full font-bold tracking-wide text-white
                 bg-gradient-to-br from-indigo-500 to-purple-500
                 dark:from-[#E50914] dark:to-[#E50914]
                 border-none cursor-pointer transition-all duration-200

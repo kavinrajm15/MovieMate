@@ -10,12 +10,23 @@ auth_bp = Blueprint('auth', __name__)
 @auth_bp.route("/admin/signup", methods=["GET", "POST"])
 def admin_signup():
     if request.method == "POST":
-        name = request.form["name"]
-        phone = request.form["phone"]
-        password = request.form["password"]
-        theatre_name = request.form["theatre_name"].strip()
-        city = request.form["city"].lower().strip()
+        if request.is_json:
+            data = request.get_json()
+            name = data.get("name")
+            phone = data.get("phone")
+            password = data.get("password")
+            theatre_name = (data.get("theatre_name") or "").strip()
+            city = (data.get("city") or "").lower().strip()
+        else:
+            name = request.form.get("name")
+            phone = request.form.get("phone")
+            password = request.form.get("password")
+            theatre_name = (request.form.get("theatre_name") or "").strip()
+            city = (request.form.get("city") or "").lower().strip()
         
+        if not name or not phone or not password or not theatre_name or not city:
+            return jsonify({"status": "error", "error": "All fields are required.", "message": "All fields are required."}), 400
+            
         db = get_db()
         theatre = db.theatres.find_one({"name": theatre_name, "city": city})
         
@@ -26,7 +37,7 @@ def admin_signup():
             db.theatres.insert_one({"_id": t_id, "theatre_id": t_id, "name": theatre_name, "city": city})
             
         if db.admins.find_one({"phone": phone}):
-            return jsonify({"status": "error", "message": "Phone number already registered."}), 400
+            return jsonify({"status": "error", "error": "Phone number already registered.", "message": "Phone number already registered."}), 400
             
         now = datetime.now().strftime("%Y-%m-%d %I:%M %p")
         a_id = get_next_id(db, "admins")
@@ -48,6 +59,8 @@ def admin_login():
         
         staff = db.staff.find_one({"username": username, "password": password})
         if staff:
+            if staff.get("status") == "inactive":
+                return jsonify({"status": "error", "message": "your account is inactive please contact admin"}), 403
             session.update({"admin": True, "role": staff["role"], "admin_name": staff["name"], "staff_id": staff["_id"], "profile_pic": staff.get("profile_pic")})
             return jsonify({"status": "success", "role": staff["role"], "user": {"name": staff["name"], "role": staff["role"], "staff_id": staff["_id"], "profile_pic": staff.get("profile_pic"), "theatre_id": None}}), 200
             
@@ -62,7 +75,16 @@ def admin_login():
             
         return jsonify({"status": "error", "message": "Incorrect username or password. Please try again."}), 401
             
-    if session.get("admin"): return jsonify({"isLoggedIn": True, "user": {"name": session.get("admin_name"), "role": session.get("role"), "staff_id": session.get("staff_id"), "theatre_id": session.get("theatre_id"), "profile_pic": session.get("profile_pic")}}), 200
+    if session.get("admin"):
+        db = get_db()
+        role = session.get("role")
+        if role != "theatre_admin":
+            staff_id = session.get("staff_id")
+            staff_member = db.staff.find_one({"_id": staff_id})
+            if not staff_member or staff_member.get("status") == "inactive":
+                session.clear()
+                return jsonify({"isLoggedIn": False}), 401
+        return jsonify({"isLoggedIn": True, "user": {"name": session.get("admin_name"), "role": session.get("role"), "staff_id": session.get("staff_id"), "theatre_id": session.get("theatre_id"), "profile_pic": session.get("profile_pic")}}), 200
     return jsonify({"isLoggedIn": False}), 401
 
 @auth_bp.route("/admin/logout")

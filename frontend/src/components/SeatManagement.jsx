@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import toast, { Toaster } from 'react-hot-toast';
+import { confirmAction } from '../utils/confirm';
 
 const SeatManagement = () => {
   const { user } = useOutletContext();
@@ -57,8 +58,13 @@ const SeatManagement = () => {
     setSeats(newSeats);
   };
 
-  const handleGenerateClick = () => {
-    if (window.confirm("Generating a new grid will overwrite your current unsaved layout. Continue?")) {
+  const handleGenerateClick = async () => {
+    const confirmed = await confirmAction({
+      title: 'Overwrite Layout?',
+      text: 'Generating a new grid will overwrite your current unsaved layout. Do you want to continue?',
+      confirmText: 'Continue'
+    });
+    if (confirmed) {
       generateNewGrid(gridRows, gridCols);
     }
   };

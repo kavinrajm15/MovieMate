@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { confirmAction } from '../utils/confirm';
 
 const ProfileRequests = () => {
   const { user } = useOutletContext();
@@ -62,7 +63,14 @@ const ProfileRequests = () => {
 
   const handleAction = async (e, actionType) => {
     e.preventDefault();
-    if (actionType === 'decline' && !window.confirm('Reject these profile changes?')) return;
+    if (actionType === 'decline') {
+      const confirmed = await confirmAction({
+        title: 'Reject Changes?',
+        text: 'Are you sure you want to reject these profile changes?',
+        confirmText: 'Reject'
+      });
+      if (!confirmed) return;
+    }
     const formData = new FormData();
     formData.append('action', actionType);
     await fetch(`http://localhost:5000/admin/profile_requests/action/${currentReq.req_id}`, {
@@ -110,14 +118,14 @@ const ProfileRequests = () => {
       {/* ══════════════════════════════════════
           PAGE HEADER
       ══════════════════════════════════════ */}
-      <header className="flex justify-between items-center flex-wrap gap-4 mb-[30px]
-        px-[30px] py-5 rounded-[20px]
-        bg-white/40 dark:bg-[rgba(30,30,30,0.95)]
-        backdrop-blur-[10px]
+      <header className="sticky top-0 z-30 flex justify-between items-center flex-wrap gap-4 mb-[30px]
+        px-[30px] py-3 rounded-[20px]
+        bg-white/80 dark:bg-[rgba(30,30,30,0.98)]
+        backdrop-blur-[15px]
         border border-white/50 dark:border-[#333333]
         shadow-[0_4px_15px_rgba(0,0,0,0.05)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.4)]">
         <div>
-          <h1 className="text-[1.8rem] font-bold mb-1 text-slate-800 dark:text-white">
+          <h1 className="text-[1.5rem] font-bold mb-0.5 text-slate-800 dark:text-white">
             Profile Change Requests
           </h1>
           <p className="text-[0.9rem] text-[#4a4e69] dark:text-[#B3B3B3]">
@@ -130,7 +138,7 @@ const ProfileRequests = () => {
           placeholder="Search by owner, theatre, or type..."
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
-          className="px-5 py-3 rounded-full w-[300px] text-[0.95rem]
+          className="px-4 py-2 rounded-full w-[300px] text-[0.9rem]
             border border-white/60 dark:border-[#333333]
             bg-white/60 dark:bg-[#121212]
             text-slate-800 dark:text-white

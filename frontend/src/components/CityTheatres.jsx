@@ -101,7 +101,12 @@ const CityTheatres = () => {
       {/* ══════════════════════════════════════
           PAGE HEADER
       ══════════════════════════════════════ */}
-      <header className="flex justify-between items-center flex-wrap gap-4 mb-6">
+      <header className="sticky top-0 z-30 flex justify-between items-center flex-wrap gap-4 mb-6
+        px-[30px] py-3 rounded-[20px]
+        bg-white/80 dark:bg-[rgba(30,30,30,0.98)]
+        backdrop-blur-[15px]
+        border border-white/50 dark:border-[#333333]
+        shadow-[0_4px_15px_rgba(0,0,0,0.05)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.4)]">
 
         <div>
           {/* Breadcrumb */}
@@ -118,7 +123,7 @@ const CityTheatres = () => {
             <span className="text-slate-800 dark:text-white capitalize">{city}</span>
           </p>
 
-          <h1 className="text-[1.8rem] font-bold m-0
+          <h1 className="text-[1.5rem] font-bold m-0
             text-slate-800 dark:text-white">
             Theatres in {city}
           </h1>
@@ -130,7 +135,7 @@ const CityTheatres = () => {
           placeholder="Search theatres..."
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
-          className="px-4 py-[10px] rounded-lg w-[250px] text-[0.95rem]
+          className="px-4 py-2 rounded-lg w-[250px] text-[0.9rem]
             border border-[#cbd5e1] dark:border-[#333333]
             bg-white dark:bg-[#121212]
             text-slate-800 dark:text-white

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
+import { confirmAction } from '../utils/confirm';
 
 const MovieRequests = () => {
   const { user } = useOutletContext();
@@ -66,7 +67,14 @@ const MovieRequests = () => {
     if (actionType === 'decline' && feedback.trim() === '') {
       toast.error('Please write a reason before declining.'); return;
     }
-    if (actionType === 'decline' && !window.confirm('Decline this request and send feedback?')) return;
+    if (actionType === 'decline') {
+      const confirmed = await confirmAction({
+        title: 'Decline Request?',
+        text: 'Decline this request and send feedback?',
+        confirmText: 'Decline'
+      });
+      if (!confirmed) return;
+    }
     const formData = new FormData();
     formData.append('action', actionType);
     formData.append('feedback', feedback);
@@ -109,14 +117,14 @@ const MovieRequests = () => {
       {/* ══════════════════════════════════════
           PAGE HEADER
       ══════════════════════════════════════ */}
-      <header className="flex justify-between items-center flex-wrap gap-4 mb-[30px]
-        px-[30px] py-5 rounded-[20px]
-        bg-white/40 dark:bg-[rgba(30,30,30,0.95)]
-        backdrop-blur-[10px]
+      <header className="sticky top-0 z-30 flex justify-between items-center flex-wrap gap-4 mb-[30px]
+        px-[30px] py-3 rounded-[20px]
+        bg-white/80 dark:bg-[rgba(30,30,30,0.98)]
+        backdrop-blur-[15px]
         border border-white/50 dark:border-[#333333]
         shadow-[0_4px_15px_rgba(0,0,0,0.05)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.4)]">
         <div>
-          <h1 className="text-[1.8rem] font-bold mb-1 text-slate-800 dark:text-white">
+          <h1 className="text-[1.5rem] font-bold mb-0.5 text-slate-800 dark:text-white">
             Partner Movie Requests
           </h1>
           <p className="text-[0.9rem] text-[#4a4e69] dark:text-[#B3B3B3]">
@@ -128,7 +136,7 @@ const MovieRequests = () => {
           placeholder="Search movies, theatres, or status..."
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
-          className="px-5 py-3 rounded-full w-[300px] text-[0.95rem]
+          className="px-4 py-2 rounded-full w-[300px] text-[0.9rem]
             border border-white/60 dark:border-[#333333]
             bg-white/60 dark:bg-[#121212]
             text-slate-800 dark:text-white

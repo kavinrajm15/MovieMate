@@ -1,7 +1,8 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { useOutletContext } from "react-router-dom";
 import { FaShieldAlt, FaUserShield, FaRedo } from "react-icons/fa";
 import { MdAdminPanelSettings } from "react-icons/md";
+import { confirmAction } from '../utils/confirm';
 
 const API = "http://localhost:5000";
 
@@ -335,6 +336,9 @@ function UsersTab({ currentUser }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -354,12 +358,25 @@ function UsersTab({ currentUser }) {
     })();
   }, []);
 
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   const loadPerms = useCallback(
     async (staffId) => {
       if (!staffId) return;
       setLoading(true);
       const staff = staffList.find((x) => x.staff_id === Number(staffId));
       setSelectedStaff(staff || null);
+      if (staff) {
+        setSearchQuery(`${staff.name} (${staff.role.replace(/_/g, " ")})`);
+      }
       try {
         const [permRes, visRes] = await Promise.all([
           fetch(`${API}/admin/permissions/${staffId}`, {
@@ -391,10 +408,30 @@ function UsersTab({ currentUser }) {
     [staffList],
   );
 
-  const handleSelect = (e) => {
-    setSelectedId(e.target.value);
+  const handleSelectStaff = (staff) => {
+    setSelectedId(staff.staff_id);
+    setSearchQuery(`${staff.name} (${staff.role.replace(/_/g, " ")})`);
     setSaved(false);
-    loadPerms(e.target.value);
+    setIsOpen(false);
+    loadPerms(staff.staff_id);
+  };
+
+  const handleSearchChange = (e) => {
+    setSearchQuery(e.target.value);
+    setIsOpen(true);
+    if (!e.target.value) {
+      setSelectedId("");
+      setSelectedStaff(null);
+      setSaved(false);
+    }
+  };
+
+  const handleClear = () => {
+    setSearchQuery("");
+    setSelectedId("");
+    setSelectedStaff(null);
+    setSaved(false);
+    setIsOpen(false);
   };
 
   const handleChange = (modKey, updated) => {
@@ -423,12 +460,12 @@ function UsersTab({ currentUser }) {
 
   const resetToRoleDefaults = async () => {
     if (!selectedId) return;
-    if (
-      !window.confirm(
-        `Reset ${selectedStaff?.name}'s permissions back to their role (${selectedStaff?.role}) defaults?`,
-      )
-    )
-      return;
+    const confirmed = await confirmAction({
+      title: 'Reset Permissions?',
+      text: `Reset ${selectedStaff?.name}'s permissions back to their role (${selectedStaff?.role}) defaults?`,
+      confirmText: 'Reset'
+    });
+    if (!confirmed) return;
     setResetting(true);
     try {
       const res = await fetch(
@@ -446,6 +483,13 @@ function UsersTab({ currentUser }) {
     setResetting(false);
   };
 
+  const filteredStaff = staffList.filter((s) => {
+    const normalizedName = s.name.toLowerCase();
+    const normalizedRole = s.role.replace(/_/g, " ").toLowerCase();
+    const query = searchQuery.toLowerCase();
+    return normalizedName.includes(query) || normalizedRole.includes(query);
+  });
+
   return (
     <div>
       {/* Select User Box */}
@@ -453,7 +497,8 @@ function UsersTab({ currentUser }) {
         className="mb-6 px-[26px] py-5 rounded-[16px]
         bg-white/80 dark:bg-[#1E1E1E]
         border border-[#e2e8f0] dark:border-[#333333]
-        shadow-[0_2px_8px_rgba(0,0,0,0.04)] dark:shadow-[0_2px_12px_rgba(0,0,0,0.3)]"
+        shadow-[0_2px_8px_rgba(0,0,0,0.04)] dark:shadow-[0_2px_12px_rgba(0,0,0,0.3)]
+        max-w-[420px]"
       >
         <label
           className="block mb-2 font-bold text-[0.82rem] uppercase tracking-wide
@@ -461,25 +506,57 @@ function UsersTab({ currentUser }) {
         >
           Select User
         </label>
-        <select
-          value={selectedId}
-          onChange={handleSelect}
-          className="w-full max-w-[420px] px-4 py-3 rounded-[10px] text-[0.9rem]
-            outline-none cursor-pointer
-            border border-[#cbd5e1] dark:border-[#333333]
-            bg-white dark:bg-[#121212]
-            text-slate-800 dark:text-white
-            transition-all duration-200
-            focus:border-indigo-500 dark:focus:border-[#E50914]
-            focus:shadow-[0_0_10px_rgba(99,102,241,0.15)] dark:focus:shadow-[0_0_10px_rgba(229,9,20,0.15)]"
-        >
-          <option value="">— Select a user —</option>
-          {staffList.map((s) => (
-            <option key={s.staff_id} value={s.staff_id}>
-              {s.name} ({s.role.replace(/_/g, " ")})
-            </option>
-          ))}
-        </select>
+        
+        <div className="relative" ref={dropdownRef}>
+          <input
+            type="text"
+            placeholder="Search by name or role..."
+            value={searchQuery}
+            onChange={handleSearchChange}
+            onFocus={(e) => {
+              e.target.select();
+              setIsOpen(true);
+            }}
+            className="w-full px-4 py-3 pr-10 rounded-[10px] text-[0.9rem]
+              outline-none border border-[#cbd5e1] dark:border-[#333333]
+              bg-white dark:bg-[#121212]
+              text-slate-800 dark:text-white
+              transition-all duration-200
+              focus:border-indigo-500 dark:focus:border-[#E50914]
+              focus:shadow-[0_0_10px_rgba(99,102,241,0.15)] dark:focus:shadow-[0_0_10px_rgba(229,9,20,0.15)]"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={handleClear}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-white text-lg cursor-pointer bg-transparent border-none outline-none"
+            >
+              &times;
+            </button>
+          )}
+
+          {isOpen && (
+            <div className="absolute left-0 right-0 mt-1 z-50 max-h-[220px] overflow-y-auto rounded-[10px] border border-[#cbd5e1] dark:border-[#333333] bg-white dark:bg-[#121212] shadow-xl">
+              {filteredStaff.length > 0 ? (
+                filteredStaff.map((s) => (
+                  <div
+                    key={s.staff_id}
+                    onClick={() => handleSelectStaff(s)}
+                    className={`px-4 py-3 text-[0.9rem] cursor-pointer transition-colors duration-150 hover:bg-slate-100 dark:hover:bg-[#1E1E1E] text-slate-800 dark:text-white ${
+                      selectedId === s.staff_id ? 'bg-indigo-50 dark:bg-[rgba(229,9,20,0.15)] font-semibold' : ''
+                    }`}
+                  >
+                    {s.name} <span className="text-[0.78rem] text-slate-400 dark:text-zinc-500">({s.role.replace(/_/g, " ")})</span>
+                  </div>
+                ))
+              ) : (
+                <div className="px-4 py-3 text-[0.9rem] text-slate-400 dark:text-zinc-500 italic">
+                  No matching staff found
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Content area */}
@@ -849,7 +926,12 @@ function RolesTab({ currentUser }) {
 
   const handleDeleteRole = async (roleName) => {
     setDeleteError("");
-    if (!window.confirm(`Delete role "${roleName}"? This cannot be undone.`))
+    const confirmed = await confirmAction({
+      title: 'Delete Role?',
+      text: `Delete role "${roleName}"? This cannot be undone.`,
+      confirmText: 'Delete'
+    });
+    if (!confirmed)
       return;
     try {
       const res = await fetch(`${API}/admin/roles/${roleName}/delete`, {

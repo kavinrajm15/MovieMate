@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { MdOutlineModeEditOutline, MdDelete } from "react-icons/md";
+import { confirmAction } from '../utils/confirm';
 
 const TheatreShowtimes = () => {
   const { theatre_id, movie_id } = useParams();
@@ -51,7 +52,12 @@ const TheatreShowtimes = () => {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this showtime?')) return;
+    const confirmed = await confirmAction({
+      title: 'Delete Showtime?',
+      text: 'Are you sure you want to delete this showtime?',
+      confirmText: 'Delete'
+    });
+    if (!confirmed) return;
     await fetch(`http://localhost:5000/admin/showtime/delete/${id}`, {
       method: 'GET', credentials: 'include'
     });

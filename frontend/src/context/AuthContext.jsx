@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import toast from 'react-hot-toast';
 
 const AuthContext = createContext(null);
 const API = 'http://localhost:5000';
@@ -33,6 +34,32 @@ export function AuthProvider({ children }) {
   const [permissions, setPermissions] = useState({});
   const [loading, setLoading]         = useState(true);
 
+  // Global fetch interceptor to log out immediately if the user is deactivated
+  useEffect(() => {
+    const originalFetch = window.fetch;
+    window.fetch = async (...args) => {
+      const res = await originalFetch(...args);
+      if (res.status === 403) {
+        try {
+          const clone = res.clone();
+          const data = await clone.json();
+          if (data && data.status === 'error' && data.message && data.message.includes('your account is inactive please contact admin')) {
+            toast.error(data.message);
+            setUser(null);
+            setPermissions({});
+            window.location.href = '/adminlogin';
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+      return res;
+    };
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
@@ -40,6 +67,19 @@ export function AuthProvider({ children }) {
           credentials: 'include',
           headers: { Accept: 'application/json' },
         });
+        if (res.status === 403) {
+          try {
+            const data = await res.json();
+            if (data && data.status === 'error' && data.message && data.message.includes('your account is inactive please contact admin')) {
+              toast.error(data.message);
+              setUser(null);
+              setPermissions({});
+              window.location.href = '/adminlogin';
+              setLoading(false);
+              return;
+            }
+          } catch {}
+        }
         const data = await res.json();
         if (data.isLoggedIn) {
           setUser(data.user);
@@ -61,12 +101,24 @@ export function AuthProvider({ children }) {
     })();
   }, []);
 
-  // Poll permissions every 10 seconds so changes apply instantly without refresh
+  // Poll permissions and auth status every 10 seconds so status changes apply instantly
   useEffect(() => {
+    if (!user) return;
     const interval = setInterval(async () => {
-      if (!user || user.role === 'superadmin') return;
-      const perms = await fetchPermsFromServer();
-      setPermissions(perms);
+      try {
+        if (user.role !== 'theatre_admin') {
+          // Check session active/inactive status by querying /admin status endpoint
+          const res = await fetch(`${API}/admin`, { credentials: 'include' });
+          if (res.status === 401) {
+            setUser(null);
+            setPermissions({});
+          }
+        }
+        if (user.role !== 'superadmin' && user.role !== 'theatre_admin') {
+          const perms = await fetchPermsFromServer();
+          setPermissions(perms);
+        }
+      } catch { /* ignore */ }
     }, 10000);
     return () => clearInterval(interval);
   }, [user]);

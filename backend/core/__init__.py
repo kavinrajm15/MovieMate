@@ -58,4 +58,26 @@ def create_app():
     app.register_blueprint(seats_bp)          
     app.register_blueprint(user_auth_bp)       
 
+    @app.before_request
+    def check_inactive_staff():
+        from flask import request, session, jsonify
+        if not session.get("admin"):
+            return
+        
+        path = request.path
+        if path.startswith("/static/") or path in ["/admin/logout", "/admin/signup"]:
+            return
+        if path == "/admin" and request.method == "POST":
+            return
+
+        if session.get("role") != "theatre_admin":
+            staff_id = session.get("staff_id")
+            if staff_id:
+                from core.database import get_db
+                db = get_db()
+                staff = db.staff.find_one({"_id": staff_id})
+                if not staff or staff.get("status") == "inactive":
+                    session.clear()
+                    return jsonify({"status": "error", "message": "your account is inactive please contact admin"}), 403
+
     return app

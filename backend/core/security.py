@@ -16,8 +16,17 @@ def check_staff_access(allowed_roles):
     """Legacy role-based check — kept for staff/permissions routes."""
     if not session.get("admin"):
         return False
-    if session.get("role") not in allowed_roles:
+    role = session.get("role")
+    if role not in allowed_roles:
         return False
+    if role != "theatre_admin":
+        staff_id = session.get("staff_id")
+        if staff_id:
+            from core.database import get_db
+            db = get_db()
+            staff = db.staff.find_one({"_id": staff_id})
+            if not staff or staff.get("status") == "inactive":
+                return False
     return True
 
 def check_perm(module, action):
@@ -31,6 +40,13 @@ def check_perm(module, action):
         return False
     role = session.get("role")
     if role == "superadmin":
+        staff_id = session.get("staff_id")
+        if staff_id:
+            from core.database import get_db
+            db = get_db()
+            staff = db.staff.find_one({"_id": staff_id})
+            if not staff or staff.get("status") == "inactive":
+                return False
         return True
     if role == "theatre_admin":
         return False
@@ -41,6 +57,11 @@ def check_perm(module, action):
 
     from core.database import get_db
     db  = get_db()
+    
+    staff = db.staff.find_one({"_id": staff_id})
+    if not staff or staff.get("status") == "inactive":
+        return False
+
     row = db.staff_permissions.find_one({"_id": staff_id})
     if not row:
         return False

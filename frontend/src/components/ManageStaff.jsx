@@ -15,6 +15,7 @@ const ManageStaff = () => {
   const [loading, setLoading]                       = useState(true);
   const [searchQuery, setSearchQuery]               = useState('');
   const [roleFilter, setRoleFilter]                 = useState('all');
+  const [activeTab, setActiveTab]                   = useState('active');
   const [currentPage, setCurrentPage]               = useState(1);
   const [itemsPerPage, setItemsPerPage]             = useState(10);
   const [isAddModalOpen, setIsAddModalOpen]         = useState(false);
@@ -99,11 +100,12 @@ const ManageStaff = () => {
     const filtered = staff.filter(s => {
       const textMatch = s.name.toLowerCase().includes(searchQuery.toLowerCase());
       const roleMatch = roleFilter === 'all' || s.role === roleFilter;
-      return textMatch && roleMatch;
+      const statusMatch = activeTab === 'active' ? s.status !== 'inactive' : s.status === 'inactive';
+      return textMatch && roleMatch && statusMatch;
     });
     setFilteredStaff(filtered);
     setCurrentPage(1);
-  }, [searchQuery, roleFilter, staff]);
+  }, [searchQuery, roleFilter, activeTab, staff]);
 
   const indexOfLast  = currentPage * itemsPerPage;
   const indexOfFirst = indexOfLast - itemsPerPage;
@@ -144,13 +146,15 @@ const ManageStaff = () => {
     fetchStaffData();
   };
 
-  const handleDeleteStaff = async (staffId) => {
-    if (!window.confirm('Are you sure you want to remove this staff member?')) return;
-    const res = await fetch(`${API}/admin/staff/delete/${staffId}`, {
+  const handleToggleStatus = async (staffId, currentStatus) => {
+    const res = await fetch(`${API}/admin/staff/toggle-status/${staffId}`, {
       method: 'POST', credentials: 'include'
     });
-    if (res.ok) fetchStaffData();
-    else { const err = await res.json(); toast.error(err.error || 'Failed to delete staff'); }
+    if (res.ok) {
+      toast.success(`Staff account has been ${currentStatus === 'inactive' ? 'activated' : 'deactivated'}.`);
+      fetchStaffData();
+    }
+    else { const err = await res.json(); toast.error(err.error || 'Failed to update staff status'); }
   };
 
   /* ── shared styles ── */
@@ -196,17 +200,20 @@ const ManageStaff = () => {
   // Unique roles from staff list for filter
   const roleOptions = [...new Set(staff.map(s => s.role))].filter(Boolean);
 
+  const activeCount = staff.filter(s => s.status !== 'inactive').length;
+  const inactiveCount = staff.filter(s => s.status === 'inactive').length;
+
   return (
     <main className="p-[30px]">
       {/* ══ PAGE HEADER ══ */}
-      <header className="flex justify-between items-center flex-wrap gap-4 mb-[30px]
-        px-[30px] py-5 rounded-[20px]
-        bg-white/40 dark:bg-[rgba(30,30,30,0.95)]
-        backdrop-blur-[10px]
+      <header className="sticky top-0 z-30 flex justify-between items-center flex-wrap gap-4 mb-[30px]
+        px-[30px] py-3 rounded-[20px]
+        bg-white/80 dark:bg-[rgba(30,30,30,0.98)]
+        backdrop-blur-[15px]
         border border-white/50 dark:border-[#333333]
         shadow-[0_4px_15px_rgba(0,0,0,0.05)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.4)]">
         <div>
-          <h1 className="text-[1.8rem] font-bold mb-1 text-slate-800 dark:text-white">
+          <h1 className="text-[1.5rem] font-bold mb-0.5 text-slate-800 dark:text-white">
             Platform Staff
           </h1>
           <p className="text-[0.9rem] text-[#4a4e69] dark:text-[#B3B3B3]">
@@ -217,7 +224,7 @@ const ManageStaff = () => {
         <div className="flex items-center gap-4 flex-wrap">
           {/* Role filter */}
           <select value={roleFilter} onChange={e => setRoleFilter(e.target.value)}
-            className="min-w-[150px] px-5 py-3 rounded-full text-[0.95rem]
+            className="min-w-[150px] px-4 py-2 rounded-full text-[0.9rem]
               border border-white/60 dark:border-[#333333]
               bg-white/60 dark:bg-[#121212]
               text-slate-800 dark:text-white
@@ -232,7 +239,7 @@ const ManageStaff = () => {
           {/* Search */}
           <input type="text" placeholder="Search staff..."
             value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
-            className="w-[250px] px-5 py-3 rounded-full text-[0.95rem]
+            className="w-[250px] px-4 py-2 rounded-full text-[0.9rem]
               border border-white/60 dark:border-[#333333]
               bg-white/60 dark:bg-[#121212]
               text-slate-800 dark:text-white
@@ -249,7 +256,7 @@ const ManageStaff = () => {
               setAddAssignUserId('');
               setAddAssignUsers([]);
             }}
-              className="px-6 py-3 rounded-full font-bold tracking-wide text-white
+              className="px-5 py-2 rounded-full font-bold tracking-wide text-white
                 border-none cursor-pointer transition-all duration-200
                 bg-gradient-to-br from-indigo-500 to-purple-500
                 dark:bg-none dark:bg-[#E50914]
@@ -269,6 +276,44 @@ const ManageStaff = () => {
         </div>
       ) : (
         <>
+          {/* ══ TABS ══ */}
+          <div className="flex gap-4 mb-[25px] flex-wrap">
+            <button
+              onClick={() => setActiveTab('active')}
+              className={`flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all duration-300 border ${
+                activeTab === 'active'
+                  ? 'bg-gradient-to-br from-indigo-500 to-purple-500 text-white shadow-[0_4px_15px_rgba(99,102,241,0.3)] dark:bg-none dark:bg-[#E50914] dark:shadow-[0_4px_15px_rgba(229,9,20,0.3)] border-transparent'
+                  : 'bg-white/40 dark:bg-[#1E1E1E] text-[#4a4e69] dark:text-[#B3B3B3] border-white/50 dark:border-[#333333] hover:bg-white/60 dark:hover:bg-[#252525]'
+              }`}
+            >
+              <span>Active Staff</span>
+              <span className={`px-2 py-0.5 rounded-full text-xs transition-all duration-300 ${
+                activeTab === 'active'
+                  ? 'bg-white/20 text-white'
+                  : 'bg-slate-200 dark:bg-[#2e2e2e] text-[#4a4e69] dark:text-[#B3B3B3]'
+              }`}>
+                {activeCount}
+              </span>
+            </button>
+            <button
+              onClick={() => setActiveTab('inactive')}
+              className={`flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all duration-300 border ${
+                activeTab === 'inactive'
+                  ? 'bg-gradient-to-br from-indigo-500 to-purple-500 text-white shadow-[0_4px_15px_rgba(99,102,241,0.3)] dark:bg-none dark:bg-[#E50914] dark:shadow-[0_4px_15px_rgba(229,9,20,0.3)] border-transparent'
+                  : 'bg-white/40 dark:bg-[#1E1E1E] text-[#4a4e69] dark:text-[#B3B3B3] border-white/50 dark:border-[#333333] hover:bg-white/60 dark:hover:bg-[#252525]'
+              }`}
+            >
+              <span>Inactive Staff</span>
+              <span className={`px-2 py-0.5 rounded-full text-xs transition-all duration-300 ${
+                activeTab === 'inactive'
+                  ? 'bg-white/20 text-white'
+                  : 'bg-slate-200 dark:bg-[#2e2e2e] text-[#4a4e69] dark:text-[#B3B3B3]'
+              }`}>
+                {inactiveCount}
+              </span>
+            </button>
+          </div>
+
           {/* ══ TABLE ══ */}
           <div className="bg-white/40 dark:bg-[#1E1E1E]
             backdrop-blur-[10px] rounded-[20px] mb-6 overflow-hidden
@@ -277,7 +322,7 @@ const ManageStaff = () => {
             <table className="w-full border-collapse">
               <thead>
                 <tr>
-                  {['Staff Member', 'Role', 'Assigned To', 'Action'].map((h, idx) => (
+                  {['Staff Member', 'Role', 'Assigned To', 'Status'].map((h, idx) => (
                     <th key={h} className={`px-[25px] py-[18px] font-bold
                       text-slate-800 dark:text-[#B3B3B3]
                       bg-[rgba(99,102,241,0.1)] dark:bg-[#121212]
@@ -355,22 +400,25 @@ const ManageStaff = () => {
                     <td className="px-[25px] py-[18px] text-right
                       border-b border-white/30 dark:border-[#2A2A2A] align-middle">
                       {s.staff_id === user?.staff_id ? (
-                        <span className="text-[0.85rem] text-slate-400 dark:text-[#666] font-semibold">
-                          Current User
+                        <span className="px-3 py-[6px] rounded-full text-[0.8rem] font-semibold border inline-block bg-slate-100 text-slate-500 border-slate-200 dark:bg-[#a3a3a3]/10 dark:text-[#a3a3a3] dark:border-[#a3a3a3]/20">
+                          Active (Self)
                         </span>
                       ) : canDelete ? (
-                        <button onClick={() => handleDeleteStaff(s.staff_id)}
-                          className="px-4 py-2 rounded-lg font-bold cursor-pointer
-                            transition-all duration-200
-                            bg-transparent text-rose-500 dark:text-[#E50914]
-                            border border-rose-200 dark:border-[rgba(229,9,20,0.3)]
-                            hover:bg-rose-500 hover:text-white hover:border-rose-500
-                            dark:hover:bg-[#E50914] dark:hover:text-white dark:hover:border-[#E50914]">
-                          Remove
+                        <button onClick={() => handleToggleStatus(s.staff_id, s.status)}
+                          className={`px-4 py-2 rounded-lg font-bold cursor-pointer transition-all duration-200 border ${
+                            s.status !== 'inactive'
+                              ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:bg-emerald-400/10 dark:text-emerald-400 dark:border-emerald-400/20 hover:bg-rose-500 hover:text-white hover:border-rose-500 dark:hover:bg-rose-600 dark:hover:text-white dark:hover:border-rose-600'
+                              : 'bg-rose-500/10 text-rose-600 border-rose-500/20 dark:bg-rose-400/10 dark:text-rose-400 dark:border-rose-400/20 hover:bg-emerald-500 hover:text-white hover:border-emerald-500 dark:hover:bg-emerald-600 dark:hover:text-white dark:hover:border-emerald-600'
+                          }`}>
+                          {s.status !== 'inactive' ? 'Active' : 'Inactive'}
                         </button>
                       ) : (
-                        <span className="text-[0.85rem] text-slate-400 dark:text-[#666] font-semibold">
-                          View Only
+                        <span className={`px-3 py-[6px] rounded-full text-[0.8rem] font-semibold border inline-block ${
+                          s.status !== 'inactive' 
+                            ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:bg-emerald-400/10 dark:text-emerald-400 dark:border-emerald-400/20' 
+                            : 'bg-rose-500/10 text-rose-600 border-rose-500/20 dark:bg-rose-400/10 dark:text-rose-400 dark:border-rose-400/20'
+                        }`}>
+                          {s.status !== 'inactive' ? 'Active' : 'Inactive'}
                         </span>
                       )}
                     </td>
@@ -381,7 +429,7 @@ const ManageStaff = () => {
                   <tr>
                     <td colSpan={4}
                       className="text-center py-[40px] font-medium text-[#94a3b8] dark:text-[#B3B3B3]">
-                      No staff accounts found.
+                      No {activeTab} staff accounts found.
                     </td>
                   </tr>
                 )}

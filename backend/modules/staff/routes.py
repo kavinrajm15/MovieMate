@@ -21,6 +21,8 @@ def manage_staff():
         
     for s in staff_members:
         s["staff_id"] = s["_id"]
+        if "status" not in s:
+            s["status"] = "active"
         if s.get("manager_id"):
             mgr = db.staff.find_one({"_id": s.get("manager_id")})
             s["manager_name"] = mgr.get("name") if mgr else ""
@@ -58,7 +60,8 @@ def add_staff():
     new_staff_id = get_next_id(db, "staff")
     db.staff.insert_one({
         "_id": new_staff_id, "staff_id": new_staff_id, "username": username, 
-        "password": password, "role": role, "name": name, "manager_id": manager_id
+        "password": password, "role": role, "name": name, "manager_id": manager_id,
+        "status": "active"
     })
 
     try:
@@ -85,9 +88,9 @@ def staff_by_role(role_name):
     db = get_db()
     
     if current_role == "superadmin":
-        staff = list(db.staff.find({"role": role_name}).sort("name", 1))
+        staff = list(db.staff.find({"role": role_name, "status": {"$ne": "inactive"}}).sort("name", 1))
     else:
-        staff = list(db.staff.find({"role": role_name, "manager_id": current_id}).sort("name", 1))
+        staff = list(db.staff.find({"role": role_name, "manager_id": current_id, "status": {"$ne": "inactive"}}).sort("name", 1))
         if current_role == role_name:
             me = db.staff.find_one({"_id": current_id})
             if me and not any(s["_id"] == me["_id"] for s in staff):
@@ -114,12 +117,12 @@ def assign_manager(staff_id):
     return jsonify({"status": "success", "message": "Assignment updated."})
 
 
-@staff_bp.route("/admin/staff/delete/<int:staff_id>", methods=["POST"])
-def delete_staff(staff_id):
+@staff_bp.route("/admin/staff/toggle-status/<int:staff_id>", methods=["POST"])
+def toggle_staff_status(staff_id):
     if not check_perm("staff", "delete"):
         return jsonify({"error": "Unauthorized"}), 403
     if staff_id == session.get("staff_id"):
-        return jsonify({"error": "Cannot delete your own account."}), 400
+        return jsonify({"error": "Cannot change your own account status."}), 400
         
     db = get_db()
     if session.get("role") != "superadmin":
@@ -127,6 +130,12 @@ def delete_staff(staff_id):
         if not target or target.get("manager_id") != session.get("staff_id"):
             return jsonify({"error": "Unauthorized"}), 403
             
-    db.staff.delete_one({"_id": staff_id})
-    db.staff.update_many({"manager_id": staff_id}, {"$set": {"manager_id": None}})
-    return jsonify({"status": "success", "message": "Staff deleted."})
+    staff = db.staff.find_one({"_id": staff_id})
+    if not staff:
+        return jsonify({"error": "Staff member not found."}), 404
+        
+    current_status = staff.get("status", "active")
+    new_status = "inactive" if current_status == "active" else "active"
+    
+    db.staff.update_one({"_id": staff_id}, {"$set": {"status": new_status}})
+    return jsonify({"status": "success", "message": f"Staff status updated to {new_status}.", "new_status": new_status})
